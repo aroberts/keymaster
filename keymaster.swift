@@ -5,7 +5,7 @@ let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
 let sessionFilePath = "/tmp/keymaster_session"
 
 // Duration for which authentication can be reused (in seconds)
-let reuseDuration: TimeInterval = 300
+let defaultReuseDuration: TimeInterval = 300
 
 func hasValidSession() -> Bool {
   guard let sessionData = try? Data(contentsOf: URL(fileURLWithPath: sessionFilePath)),
@@ -13,12 +13,19 @@ func hasValidSession() -> Bool {
     return false
   }
   let currentTime = Date().timeIntervalSince1970
-  return currentTime - lastAuthTime <= reuseDuration
+  return currentTime - lastAuthTime <= reuseDuration()
 }
 
 func updateSession() {
   let currentTime = String(Date().timeIntervalSince1970)
   try? currentTime.write(to: URL(fileURLWithPath: sessionFilePath), atomically: true, encoding: .utf8)
+}
+
+func reuseDuration() -> TimeInterval {
+  let envReuseDuration = ProcessInfo.processInfo.environment["KEYMASTER_TTL"]
+  let reuseDurationValue = envReuseDuration.flatMap(TimeInterval.init) ?? defaultReuseDuration
+  print("TTL duration \(reuseDurationValue)")
+  return reuseDurationValue
 }
 
 func usage() {
