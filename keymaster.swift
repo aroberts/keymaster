@@ -23,9 +23,7 @@ func updateSession() {
 
 func reuseDuration() -> TimeInterval {
   let envReuseDuration = ProcessInfo.processInfo.environment["KEYMASTER_TTL"]
-  let reuseDurationValue = envReuseDuration.flatMap(TimeInterval.init) ?? defaultReuseDuration
-  print("TTL duration \(reuseDurationValue)")
-  return reuseDurationValue
+  return envReuseDuration.flatMap(TimeInterval.init) ?? defaultReuseDuration
 }
 
 func usage() {
