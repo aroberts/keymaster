@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# SSH_ASKPASS handler for keymaster.
+# SSH calls this with a prompt string as $1.
+# We parse the key path from the prompt and retrieve its passphrase
+# from keymaster's keychain store via TouchID.
+
+KEYMASTER_SSH_PREFIX="${KEYMASTER_SSH_PREFIX:-ssh_key_passphrase}"
+
+# Only handle passphrase prompts, not confirmations or notifications
+case "${SSH_ASKPASS_PROMPT:-}" in
+  confirm|none) exit 1 ;;
+esac
+
+prompt="${1:-}"
+if [[ -z "$prompt" ]]; then
+  exit 1
+fi
+
+# Parse key path from SSH prompt strings like:
+#   "Enter passphrase for /path/to/key: "
+#   "Enter passphrase for key '/path/to/key': "
+if [[ "$prompt" =~ for[[:space:]]+[\'\"]*([^:\'\"]+) ]]; then
+  key_path="${BASH_REMATCH[1]}"
+  # Trim trailing whitespace
+  key_path="${key_path%"${key_path##*[![:space:]]}"}"
+else
+  exit 1
+fi
+
+key_basename="$(basename "$key_path")"
+
+# Resolve keymaster binary: check relative to this script first, then PATH
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -x "$SCRIPT_DIR/keymaster" ]]; then
+  KEYMASTER="$SCRIPT_DIR/keymaster"
+else
+  KEYMASTER="keymaster"
+fi
+
+# Retrieve the passphrase — stdout only gets the passphrase, errors go to stderr
+exec "$KEYMASTER" get "${KEYMASTER_SSH_PREFIX}:${key_basename}"

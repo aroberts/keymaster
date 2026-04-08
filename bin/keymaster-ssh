@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# keymaster-ssh: Manage SSH key passphrases via keymaster (TouchID-protected keychain).
+
+DEFAULT_PREFIX="ssh_key_passphrase"
+PREFIX="${KEYMASTER_SSH_PREFIX:-$DEFAULT_PREFIX}"
+
+# Resolve keymaster binary: check relative to this script first, then PATH
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -x "$SCRIPT_DIR/keymaster" ]]; then
+  KEYMASTER="$SCRIPT_DIR/keymaster"
+else
+  KEYMASTER="keymaster"
+fi
+
+ASKPASS_PATH="$(cd "$(dirname "$0")" && pwd)/keymaster-askpass"
+
+usage() {
+  cat >&2 <<EOF
+Usage: keymaster-ssh [--prefix PREFIX] <command> [args]
+
+Commands:
+  generate [-t type] [-b bits] [-C comment] [-f file]
+                          Generate a new SSH key with a random passphrase
+  import <key_path>       Store an existing key's passphrase in keymaster
+  setup                   Print shell configuration for SSH_ASKPASS
+  list                    Show which ~/.ssh/ keys have stored passphrases
+  remove <key_basename>   Remove a stored passphrase from keymaster
+
+Environment:
+  KEYMASTER_SSH_PREFIX    Keychain key prefix (default: ssh_key_passphrase)
+
+The keychain key for each SSH key is: <prefix>:<key_basename>
+EOF
+}
+
+cmd_generate() {
+  local key_type="ed25519"
+  local bits=""
+  local comment="${USER}@$(hostname -s)"
+  local output_file=""
+
+  while getopts "t:b:C:f:" opt; do
+    case "$opt" in
+      t) key_type="$OPTARG" ;;
+      b) bits="$OPTARG" ;;
+      C) comment="$OPTARG" ;;
+      f) output_file="$OPTARG" ;;
+      *) usage; exit 1 ;;
+    esac
+  done
+
+  if [[ -z "$output_file" ]]; then
+    output_file="$HOME/.ssh/id_${key_type}"
+  fi
+
+  if [[ -e "$output_file" ]]; then
+    echo "Error: $output_file already exists. Remove it first or use -f to specify a different path." >&2
+    exit 1
+  fi
+
+  # Ensure ~/.ssh exists with correct permissions
+  mkdir -p "$(dirname "$output_file")"
+  chmod 700 "$(dirname "$output_file")"
+
+  # Generate a random 32-character passphrase
+  local passphrase
+  passphrase="$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom | head -c 32)"
+
+  # Build ssh-keygen command
+  local keygen_args=(-t "$key_type" -C "$comment" -f "$output_file" -N "$passphrase")
+  if [[ -n "$bits" ]]; then
+    keygen_args+=(-b "$bits")
+  fi
+
+  if ! ssh-keygen "${keygen_args[@]}"; then
+    echo "Error: ssh-keygen failed." >&2
+    exit 1
+  fi
+
+  local key_basename
+  key_basename="$(basename "$output_file")"
+
+  if ! "$KEYMASTER" set "${PREFIX}:${key_basename}" "$passphrase"; then
+    echo "Warning: Key was generated but passphrase could NOT be stored in keymaster." >&2
+    echo "Passphrase: $passphrase" >&2
+    echo "Store it manually: keymaster set '${PREFIX}:${key_basename}' '<passphrase>'" >&2
+    exit 1
+  fi
+
+  echo "SSH key generated: $output_file" >&2
+  echo "Public key: ${output_file}.pub" >&2
+  echo "Passphrase stored in keymaster as: ${PREFIX}:${key_basename}" >&2
+}
+
+cmd_import() {
+  local key_path="${1:-}"
+
+  if [[ -z "$key_path" ]]; then
+    echo "Usage: keymaster-ssh import <key_path>" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$key_path" ]]; then
+    echo "Error: $key_path is not a file." >&2
+    exit 1
+  fi
+
+  # Check if the key has no passphrase
+  if ssh-keygen -y -f "$key_path" -P "" > /dev/null 2>&1; then
+    echo "This key has no passphrase — nothing to store." >&2
+    exit 0
+  fi
+
+  local passphrase
+  read -rsp "Enter passphrase for $(basename "$key_path"): " passphrase
+  echo >&2
+
+  # Verify the passphrase actually works
+  if ! ssh-keygen -y -f "$key_path" -P "$passphrase" > /dev/null 2>&1; then
+    echo "Error: Incorrect passphrase." >&2
+    exit 1
+  fi
+
+  local key_basename
+  key_basename="$(basename "$key_path")"
+
+  if ! "$KEYMASTER" set "${PREFIX}:${key_basename}" "$passphrase"; then
+    echo "Error: Failed to store passphrase in keymaster." >&2
+    exit 1
+  fi
+
+  echo "Passphrase stored in keymaster as: ${PREFIX}:${key_basename}" >&2
+}
+
+cmd_setup() {
+  local askpass_resolved
+  askpass_resolved="$(cd "$(dirname "$ASKPASS_PATH")" && pwd)/$(basename "$ASKPASS_PATH")"
+
+  cat <<EOF
+# Keymaster SSH integration — add to ~/.zshrc or ~/.bashrc
+export SSH_ASKPASS="${askpass_resolved}"
+export SSH_ASKPASS_REQUIRE="force"
+EOF
+
+  if [[ "$PREFIX" != "$DEFAULT_PREFIX" ]]; then
+    echo "export KEYMASTER_SSH_PREFIX=\"${PREFIX}\""
+  fi
+
+  echo >&2
+  echo "Add the lines above to your shell profile, then run: source ~/.zshrc" >&2
+}
+
+cmd_list() {
+  local found=0
+
+  printf "%-30s %s\n" "KEY" "STORED" >&2
+
+  for f in "$HOME"/.ssh/id_*; do
+    [[ "$f" == *.pub ]] && continue
+    [[ -f "$f" ]] || continue
+
+    local key_basename
+    key_basename="$(basename "$f")"
+    found=1
+
+    if "$KEYMASTER" get "${PREFIX}:${key_basename}" > /dev/null 2>&1; then
+      printf "%-30s %s\n" "$key_basename" "yes" >&2
+    else
+      printf "%-30s %s\n" "$key_basename" "no" >&2
+    fi
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    echo "No SSH keys found in ~/.ssh/" >&2
+  fi
+}
+
+cmd_remove() {
+  local key_basename="${1:-}"
+
+  if [[ -z "$key_basename" ]]; then
+    echo "Usage: keymaster-ssh remove <key_basename>" >&2
+    exit 1
+  fi
+
+  if ! "$KEYMASTER" delete "${PREFIX}:${key_basename}"; then
+    echo "Error: Failed to remove passphrase for ${key_basename}." >&2
+    exit 1
+  fi
+
+  echo "Passphrase removed for: ${key_basename}" >&2
+}
+
+# Parse global --prefix flag before subcommand
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --prefix)
+      PREFIX="${2:?--prefix requires a value}"
+      shift 2
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+command="${1:-}"
+shift || true
+
+case "$command" in
+  generate) cmd_generate "$@" ;;
+  import)   cmd_import "$@" ;;
+  setup)    cmd_setup ;;
+  list)     cmd_list ;;
+  remove)   cmd_remove "$@" ;;
+  help|"")  usage ;;
+  *)
+    echo "Unknown command: $command" >&2
+    usage
+    exit 1
+    ;;
+esac

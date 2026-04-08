@@ -1,6 +1,10 @@
 import Foundation
 import LocalAuthentication
 
+func printErr(_ message: String) {
+  FileHandle.standardError.write(Data((message + "\n").utf8))
+}
+
 let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
 let sessionFilePath = "/tmp/keymaster_session"
 
@@ -27,7 +31,7 @@ func reuseDuration() -> TimeInterval {
 }
 
 func usage() {
-  print("keymaster [get|set|delete] [key] [secret]")
+  printErr("keymaster [get|set|delete] [key] [secret]")
 }
 
 func main() {
@@ -53,7 +57,7 @@ func main() {
   let context = LAContext()
   var error: NSError?
   guard context.canEvaluatePolicy(policy, error: &error) else {
-    print("This Mac doesn't support deviceOwnerAuthenticationWithBiometrics")
+    printErr("This Mac doesn't support deviceOwnerAuthenticationWithBiometrics")
     exit(EXIT_FAILURE)
   }
 
@@ -63,7 +67,7 @@ func main() {
       performAction(action: action, key: key, secret: secret)
       exit(EXIT_SUCCESS)
     } else {
-      print("Authentication failed or was canceled: \(error?.localizedDescription ?? "Unknown error")")
+      printErr("Authentication failed or was canceled: \(error?.localizedDescription ?? "Unknown error")")
       exit(EXIT_FAILURE)
     }
   }
@@ -75,7 +79,7 @@ func performAction(action: String, key: String, secret: String) {
     guard setPassword(key: key, password: secret) else {
       exit(EXIT_FAILURE)
     }
-    print("Key \(key) has been successfully set in the keychain")
+    printErr("Key \(key) has been successfully set in the keychain")
   } else if action == "get" {
     guard let password = getPassword(key: key) else {
       exit(EXIT_FAILURE)
@@ -85,7 +89,7 @@ func performAction(action: String, key: String, secret: String) {
     guard deletePassword(key: key) else {
       exit(EXIT_FAILURE)
     }
-    print("Key \(key) has been successfully deleted from the keychain")
+    printErr("Key \(key) has been successfully deleted from the keychain")
   }
 }
 
@@ -98,9 +102,9 @@ func setPassword(key: String, password: String) -> Bool {
   let status = SecItemAdd(query as CFDictionary, nil)
   if status != errSecSuccess {
     if let errorMessage = SecCopyErrorMessageString(status, nil) {
-      print("Error setting password: \(errorMessage)")
+      printErr("Error setting password: \(errorMessage)")
     } else {
-      print("Unknown error occurred while setting password")
+      printErr("Unknown error occurred while setting password")
     }
   }
   return status == errSecSuccess
@@ -117,9 +121,9 @@ func getPassword(key: String) -> String? {
   let status = SecItemCopyMatching(query as CFDictionary, &item)
   if status != errSecSuccess {
     if let errorMessage = SecCopyErrorMessageString(status, nil) {
-      print("Error getting password: \(errorMessage)")
+      printErr("Error getting password: \(errorMessage)")
     } else {
-      print("Unknown error occurred while getting password")
+      printErr("Unknown error occurred while getting password")
     }
     return nil
   }
@@ -135,9 +139,9 @@ func deletePassword(key: String) -> Bool {
   let status = SecItemDelete(query as CFDictionary)
   if status != errSecSuccess {
     if let errorMessage = SecCopyErrorMessageString(status, nil) {
-      print("Error deleting password: \(errorMessage)")
+      printErr("Error deleting password: \(errorMessage)")
     } else {
-      print("Unknown error occurred while deleting password")
+      printErr("Unknown error occurred while deleting password")
     }
   }
   return status == errSecSuccess
