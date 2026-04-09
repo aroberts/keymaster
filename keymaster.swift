@@ -50,6 +50,21 @@ func getOrCreateHMACKey() -> SymmetricKey {
   return newKey
 }
 
+func deriveKeys() -> (naming: SymmetricKey, signing: SymmetricKey) {
+  let master = getOrCreateHMACKey()
+  let naming = HKDF<SHA256>.deriveKey(
+    inputKeyMaterial: master,
+    info: Data("keymaster.key-naming".utf8),
+    outputByteCount: 32
+  )
+  let signing = HKDF<SHA256>.deriveKey(
+    inputKeyMaterial: master,
+    info: Data("keymaster.session-signing".utf8),
+    outputByteCount: 32
+  )
+  return (naming, signing)
+}
+
 func computeHMAC(for message: String, using key: SymmetricKey) -> String {
   let mac = HMAC<SHA256>.authenticationCode(
     for: Data(message.utf8),
@@ -94,24 +109,24 @@ func writeSessionEntries(_ entries: [String: Double], hmacKey: SymmetricKey) {
 }
 
 func hasValidSession(for keyName: String) -> Bool {
-  let hmacKey = getOrCreateHMACKey()
-  let entries = readSessionEntries(hmacKey: hmacKey)
-  let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: hmacKey)
+  let keys = deriveKeys()
+  let entries = readSessionEntries(hmacKey: keys.signing)
+  let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: keys.naming)
   guard let lastAuthTime = entries[hashedKey] else { return false }
   let currentTime = Date().timeIntervalSince1970
   return currentTime - lastAuthTime <= reuseDuration()
 }
 
 func updateSession(for keyName: String) {
-  let hmacKey = getOrCreateHMACKey()
-  var entries = readSessionEntries(hmacKey: hmacKey)
-  let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: hmacKey)
+  let keys = deriveKeys()
+  var entries = readSessionEntries(hmacKey: keys.signing)
+  let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: keys.naming)
   let currentTime = Date().timeIntervalSince1970
   // Update this key and prune expired entries
   entries[hashedKey] = currentTime
   let ttl = reuseDuration()
   entries = entries.filter { currentTime - $0.value <= ttl }
-  writeSessionEntries(entries, hmacKey: hmacKey)
+  writeSessionEntries(entries, hmacKey: keys.signing)
 }
 
 func reuseDuration() -> TimeInterval {
