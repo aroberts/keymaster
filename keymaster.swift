@@ -30,6 +30,7 @@ let sessionFilePath: String = {
   return base + "keymaster_session"
 }()
 
+let lockFilePath = sessionFilePath + ".lock"
 let hmacKeyName = "keymaster_session_hmac_key"
 
 // Duration for which authentication can be reused (in seconds)
@@ -108,25 +109,44 @@ func writeSessionEntries(_ entries: [String: Double], hmacKey: SymmetricKey) {
   try? content.write(to: URL(fileURLWithPath: sessionFilePath), atomically: true, encoding: .utf8)
 }
 
-func hasValidSession(for keyName: String) -> Bool {
-  let keys = deriveKeys()
-  let entries = readSessionEntries(hmacKey: keys.signing)
-  let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: keys.naming)
-  guard let lastAuthTime = entries[hashedKey] else { return false }
-  let currentTime = Date().timeIntervalSince1970
-  return currentTime - lastAuthTime <= reuseDuration()
+func withSessionLock<T>(exclusive: Bool, _ body: () -> T) -> T {
+  let fd = open(lockFilePath, O_CREAT | O_RDWR, 0o600)
+  if fd >= 0 {
+    flock(fd, exclusive ? LOCK_EX : LOCK_SH)
+  }
+  defer {
+    if fd >= 0 {
+      flock(fd, LOCK_UN)
+      close(fd)
+    }
+  }
+  return body()
+}
+
+func withValidSession(for keyName: String, perform action: () -> Void) -> Bool {
+  return withSessionLock(exclusive: false) {
+    let keys = deriveKeys()
+    let entries = readSessionEntries(hmacKey: keys.signing)
+    let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: keys.naming)
+    guard let lastAuthTime = entries[hashedKey] else { return false }
+    let currentTime = Date().timeIntervalSince1970
+    guard currentTime - lastAuthTime <= reuseDuration() else { return false }
+    action()
+    return true
+  }
 }
 
 func updateSession(for keyName: String) {
-  let keys = deriveKeys()
-  var entries = readSessionEntries(hmacKey: keys.signing)
-  let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: keys.naming)
-  let currentTime = Date().timeIntervalSince1970
-  // Update this key and prune expired entries
-  entries[hashedKey] = currentTime
-  let ttl = reuseDuration()
-  entries = entries.filter { currentTime - $0.value <= ttl }
-  writeSessionEntries(entries, hmacKey: keys.signing)
+  withSessionLock(exclusive: true) {
+    let keys = deriveKeys()
+    var entries = readSessionEntries(hmacKey: keys.signing)
+    let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: keys.naming)
+    let currentTime = Date().timeIntervalSince1970
+    entries[hashedKey] = currentTime
+    let ttl = reuseDuration()
+    entries = entries.filter { currentTime - $0.value <= ttl }
+    writeSessionEntries(entries, hmacKey: keys.signing)
+  }
 }
 
 func reuseDuration() -> TimeInterval {
@@ -159,10 +179,10 @@ func main() {
   }
 
   // Check if there is a valid session for this key
-  if hasValidSession(for: key) {
+  let acted = withValidSession(for: key) {
     performAction(action: action, key: key, secret: secret)
-    exit(EXIT_SUCCESS)
   }
+  if acted { exit(EXIT_SUCCESS) }
 
   // No valid session, proceed with TouchID authentication
   let context = LAContext()
