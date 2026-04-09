@@ -6,6 +6,22 @@ func printErr(_ message: String) {
   FileHandle.standardError.write(Data((message + "\n").utf8))
 }
 
+extension Data {
+  init?(hexString: String) {
+    let len = hexString.count
+    guard len.isMultiple(of: 2) else { return nil }
+    var data = Data(capacity: len / 2)
+    var index = hexString.startIndex
+    while index < hexString.endIndex {
+      let nextIndex = hexString.index(index, offsetBy: 2)
+      guard let byte = UInt8(hexString[index..<nextIndex], radix: 16) else { return nil }
+      data.append(byte)
+      index = nextIndex
+    }
+    self = data
+  }
+}
+
 let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
 
 let sessionFilePath: String = {
@@ -52,8 +68,9 @@ func readSessionEntries(hmacKey: SymmetricKey) -> [String: Double] {
   guard lines.count >= 2 else { return [:] }
   let fileHMAC = lines.removeLast()
   let body = lines.joined(separator: "\n")
-  let expectedFileHMAC = computeHMAC(for: body, using: hmacKey)
-  guard fileHMAC == expectedFileHMAC else { return [:] }
+  guard let fileHMACData = Data(hexString: fileHMAC),
+        HMAC<SHA256>.isValidAuthenticationCode(fileHMACData, authenticating: Data(body.utf8), using: hmacKey)
+  else { return [:] }
   // Parse entries: each line is "hashedKey:timestamp"
   var entries: [String: Double] = [:]
   for line in lines {
