@@ -42,30 +42,59 @@ func computeHMAC(for message: String, using key: SymmetricKey) -> String {
   return mac.map { String(format: "%02x", $0) }.joined()
 }
 
-func hasValidSession() -> Bool {
+func readSessionEntries(hmacKey: SymmetricKey) -> [String: Double] {
   guard let sessionData = try? String(contentsOfFile: sessionFilePath, encoding: .utf8) else {
-    return false
+    return [:]
   }
-  let lines = sessionData.components(separatedBy: "\n")
-  guard lines.count >= 2,
-        let lastAuthTime = Double(lines[0]) else {
-    return false
+  var lines = sessionData.components(separatedBy: "\n")
+    .filter { !$0.isEmpty }
+  // Last line is the file-level HMAC
+  guard lines.count >= 2 else { return [:] }
+  let fileHMAC = lines.removeLast()
+  let body = lines.joined(separator: "\n")
+  let expectedFileHMAC = computeHMAC(for: body, using: hmacKey)
+  guard fileHMAC == expectedFileHMAC else { return [:] }
+  // Parse entries: each line is "hashedKey:timestamp"
+  var entries: [String: Double] = [:]
+  for line in lines {
+    guard let separatorIndex = line.lastIndex(of: ":"),
+          separatorIndex > line.startIndex else { continue }
+    let hashedKey = String(line[..<separatorIndex])
+    let timestampStr = String(line[line.index(after: separatorIndex)...])
+    if let timestamp = Double(timestampStr) {
+      entries[hashedKey] = timestamp
+    }
   }
-  let key = getOrCreateHMACKey()
-  let expectedHMAC = computeHMAC(for: lines[0], using: key)
-  guard lines[1] == expectedHMAC else {
-    return false
-  }
+  return entries
+}
+
+func writeSessionEntries(_ entries: [String: Double], hmacKey: SymmetricKey) {
+  let lines = entries.map { "\($0.key):\($0.value)" }
+  let body = lines.joined(separator: "\n")
+  let fileHMAC = computeHMAC(for: body, using: hmacKey)
+  let content = body + "\n" + fileHMAC
+  try? content.write(to: URL(fileURLWithPath: sessionFilePath), atomically: true, encoding: .utf8)
+}
+
+func hasValidSession(for keyName: String) -> Bool {
+  let hmacKey = getOrCreateHMACKey()
+  let entries = readSessionEntries(hmacKey: hmacKey)
+  let hashedKey = computeHMAC(for: keyName, using: hmacKey)
+  guard let lastAuthTime = entries[hashedKey] else { return false }
   let currentTime = Date().timeIntervalSince1970
   return currentTime - lastAuthTime <= reuseDuration()
 }
 
-func updateSession() {
-  let timestamp = String(Date().timeIntervalSince1970)
-  let key = getOrCreateHMACKey()
-  let hmac = computeHMAC(for: timestamp, using: key)
-  let content = timestamp + "\n" + hmac
-  try? content.write(to: URL(fileURLWithPath: sessionFilePath), atomically: true, encoding: .utf8)
+func updateSession(for keyName: String) {
+  let hmacKey = getOrCreateHMACKey()
+  var entries = readSessionEntries(hmacKey: hmacKey)
+  let hashedKey = computeHMAC(for: keyName, using: hmacKey)
+  let currentTime = Date().timeIntervalSince1970
+  // Update this key and prune expired entries
+  entries[hashedKey] = currentTime
+  let ttl = reuseDuration()
+  entries = entries.filter { currentTime - $0.value <= ttl }
+  writeSessionEntries(entries, hmacKey: hmacKey)
 }
 
 func reuseDuration() -> TimeInterval {
@@ -90,8 +119,8 @@ func main() {
     secret = inputArgs[2]
   }
 
-  // Check if there is a valid session
-  if hasValidSession() {
+  // Check if there is a valid session for this key
+  if hasValidSession(for: key) {
     performAction(action: action, key: key, secret: secret)
     exit(EXIT_SUCCESS)
   }
@@ -106,7 +135,7 @@ func main() {
 
   context.evaluatePolicy(policy, localizedReason: "Authenticate to proceed") { success, error in
     if success {
-      updateSession()
+      updateSession(for: key)
       performAction(action: action, key: key, secret: secret)
       exit(EXIT_SUCCESS)
     } else {

@@ -51,9 +51,9 @@ To change a secret, you can use `keymaster set` again or the
 ### Session TTL
 
 After a successful TouchID authentication, keymaster caches the session for
-5 minutes (300 seconds) by default. Subsequent operations within that window
-skip the TouchID prompt. Configure this with the `KEYMASTER_TTL` environment
-variable:
+that specific key for 5 minutes (300 seconds) by default. Accessing a different
+key within the TTL window still requires TouchID. Configure the TTL with the
+`KEYMASTER_TTL` environment variable:
 
 ```bash
 # Extend to 10 minutes
@@ -65,9 +65,11 @@ export KEYMASTER_TTL=0
 
 The session file is stored in `$TMPDIR` (a per-user directory on macOS, e.g.,
 `/var/folders/xx/.../T/keymaster_session`). It does not persist across reboots.
+Expired entries are pruned automatically.
 
-The session is HMAC-SHA256 signed using a key stored in the keychain, so
-writing a forged timestamp to the session file will not bypass TouchID.
+The session is HMAC-SHA256 signed using a key stored in the keychain. Key names
+are hashed before being written to the session file, so the file does not reveal
+which keychain entries have been accessed.
 
 ## SSH Integration
 
