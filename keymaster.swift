@@ -120,20 +120,27 @@ func reuseDuration() -> TimeInterval {
 }
 
 func usage() {
-  printErr("keymaster [get|set|delete] [key] [secret]")
+  printErr("keymaster [get|delete] <key>")
+  printErr("echo <secret> | keymaster set <key>")
 }
 
 func main() {
   let inputArgs: [String] = Array(CommandLine.arguments.dropFirst())
-  if inputArgs.count < 2 || inputArgs.count > 3 {
+  if inputArgs.count != 2 {
     usage()
     exit(EXIT_FAILURE)
   }
   let action = inputArgs[0]
   let key = inputArgs[1]
   var secret = ""
-  if action == "set" && inputArgs.count == 3 {
-    secret = inputArgs[2]
+  if action == "set" {
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard let input = String(data: data, encoding: .utf8), !input.isEmpty else {
+      printErr("Failed to read secret from stdin")
+      exit(EXIT_FAILURE)
+    }
+    secret = input
+    if secret.hasSuffix("\n") { secret.removeLast() }
   }
 
   // Check if there is a valid session for this key

@@ -68,13 +68,21 @@ cmd_generate() {
   local passphrase
   passphrase="$(LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*' < /dev/urandom | head -c 32)"
 
-  # Build ssh-keygen command
-  local keygen_args=(-t "$key_type" -C "$comment" -f "$output_file" -N "$passphrase")
+  # Temporary askpass to provide passphrase via env instead of argv
+  local askpass_tmp
+  askpass_tmp="$(mktemp)"
+  trap 'rm -f "$askpass_tmp"' EXIT
+  chmod 700 "$askpass_tmp"
+  printf '#!/bin/sh\nprintf "%%s" "$_KM_PP"\n' > "$askpass_tmp"
+
+  # Build ssh-keygen command (no -N to avoid exposing passphrase in ps)
+  local keygen_args=(-t "$key_type" -C "$comment" -f "$output_file")
   if [[ -n "$bits" ]]; then
     keygen_args+=(-b "$bits")
   fi
 
-  if ! ssh-keygen "${keygen_args[@]}"; then
+  if ! _KM_PP="$passphrase" SSH_ASKPASS="$askpass_tmp" SSH_ASKPASS_REQUIRE=force \
+       ssh-keygen "${keygen_args[@]}" < /dev/null; then
     echo "Error: ssh-keygen failed." >&2
     exit 1
   fi
@@ -82,10 +90,10 @@ cmd_generate() {
   local key_basename
   key_basename="$(basename "$output_file")"
 
-  if ! "$KEYMASTER" set "${PREFIX}:${key_basename}" "$passphrase"; then
+  if ! printf '%s' "$passphrase" | "$KEYMASTER" set "${PREFIX}:${key_basename}"; then
     echo "Warning: Key was generated but passphrase could NOT be stored in keymaster." >&2
     echo "Passphrase: $passphrase" >&2
-    echo "Store it manually: keymaster set '${PREFIX}:${key_basename}' '<passphrase>'" >&2
+    echo "Store it manually: echo '<passphrase>' | keymaster set '${PREFIX}:${key_basename}'" >&2
     exit 1
   fi
 
@@ -117,8 +125,15 @@ cmd_import() {
   read -rsp "Enter passphrase for $(basename "$key_path"): " passphrase
   echo >&2
 
-  # Verify the passphrase actually works
-  if ! ssh-keygen -y -f "$key_path" -P "$passphrase" > /dev/null 2>&1; then
+  # Verify the passphrase via SSH_ASKPASS to avoid exposing it in ps
+  local askpass_tmp
+  askpass_tmp="$(mktemp)"
+  trap 'rm -f "$askpass_tmp"' EXIT
+  chmod 700 "$askpass_tmp"
+  printf '#!/bin/sh\nprintf "%%s" "$_KM_PP"\n' > "$askpass_tmp"
+
+  if ! _KM_PP="$passphrase" SSH_ASKPASS="$askpass_tmp" SSH_ASKPASS_REQUIRE=force \
+       ssh-keygen -y -f "$key_path" < /dev/null > /dev/null 2>&1; then
     echo "Error: Incorrect passphrase." >&2
     exit 1
   fi
@@ -126,7 +141,7 @@ cmd_import() {
   local key_basename
   key_basename="$(basename "$key_path")"
 
-  if ! "$KEYMASTER" set "${PREFIX}:${key_basename}" "$passphrase"; then
+  if ! printf '%s' "$passphrase" | "$KEYMASTER" set "${PREFIX}:${key_basename}"; then
     echo "Error: Failed to store passphrase in keymaster." >&2
     exit 1
   fi
