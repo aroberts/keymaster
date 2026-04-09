@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import LocalAuthentication
 
@@ -6,14 +7,53 @@ func printErr(_ message: String) {
 }
 
 let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
-let sessionFilePath = "/tmp/keymaster_session"
+
+let sessionFilePath: String = {
+  let dir = ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp/"
+  let base = dir.hasSuffix("/") ? dir : dir + "/"
+  return base + "keymaster_session"
+}()
+
+let hmacKeyName = "keymaster_session_hmac_key"
 
 // Duration for which authentication can be reused (in seconds)
 let defaultReuseDuration: TimeInterval = 300
 
+func getOrCreateHMACKey() -> SymmetricKey {
+  if let existingBase64 = getPassword(key: hmacKeyName),
+     let keyData = Data(base64Encoded: existingBase64) {
+    return SymmetricKey(data: keyData)
+  }
+  let newKey = SymmetricKey(size: .bits256)
+  let keyData = newKey.withUnsafeBytes { Data($0) }
+  let base64String = keyData.base64EncodedString()
+  guard setPassword(key: hmacKeyName, password: base64String) else {
+    printErr("Failed to store HMAC key in keychain")
+    exit(EXIT_FAILURE)
+  }
+  return newKey
+}
+
+func computeHMAC(for message: String, using key: SymmetricKey) -> String {
+  let mac = HMAC<SHA256>.authenticationCode(
+    for: Data(message.utf8),
+    using: key
+  )
+  return mac.map { String(format: "%02x", $0) }.joined()
+}
+
 func hasValidSession() -> Bool {
-  guard let sessionData = try? Data(contentsOf: URL(fileURLWithPath: sessionFilePath)),
-        let lastAuthTime = Double(String(data: sessionData, encoding: .utf8) ?? "") else {
+  guard let sessionData = try? String(contentsOfFile: sessionFilePath, encoding: .utf8) else {
+    return false
+  }
+  let lines = sessionData.components(separatedBy: "\n")
+  guard lines.count >= 2,
+        let lastAuthTime = Double(lines[0]) else {
+    return false
+  }
+  let key = getOrCreateHMACKey()
+  let expectedHMAC = computeHMAC(for: lines[0], using: key)
+  guard lines[1] == expectedHMAC else {
     return false
   }
   let currentTime = Date().timeIntervalSince1970
@@ -21,8 +61,11 @@ func hasValidSession() -> Bool {
 }
 
 func updateSession() {
-  let currentTime = String(Date().timeIntervalSince1970)
-  try? currentTime.write(to: URL(fileURLWithPath: sessionFilePath), atomically: true, encoding: .utf8)
+  let timestamp = String(Date().timeIntervalSince1970)
+  let key = getOrCreateHMACKey()
+  let hmac = computeHMAC(for: timestamp, using: key)
+  let content = timestamp + "\n" + hmac
+  try? content.write(to: URL(fileURLWithPath: sessionFilePath), atomically: true, encoding: .utf8)
 }
 
 func reuseDuration() -> TimeInterval {

@@ -63,8 +63,11 @@ export KEYMASTER_TTL=600
 export KEYMASTER_TTL=0
 ```
 
-The session is stored at `/tmp/keymaster_session` and does not persist across
-reboots.
+The session file is stored in `$TMPDIR` (a per-user directory on macOS, e.g.,
+`/var/folders/xx/.../T/keymaster_session`). It does not persist across reboots.
+
+The session is HMAC-SHA256 signed using a key stored in the keychain, so
+writing a forged timestamp to the session file will not bypass TouchID.
 
 ## SSH Integration
 
@@ -234,6 +237,9 @@ falling back to `$PATH`.
 
 - Passphrases are stored in the macOS Keychain, protected by TouchID via
   keymaster. They are never written to disk in plaintext.
+- The session file is stored in `$TMPDIR` (per-user, mode 700 on macOS) and
+  HMAC-signed to prevent forgery. The HMAC key is stored in the keychain and
+  generated automatically on first use.
 - During `generate`, the passphrase is briefly visible in the process argument
   list (passed to `ssh-keygen -N` and `keymaster set`). This is acceptable for
   single-user machines; on shared systems, consider importing keys instead.
