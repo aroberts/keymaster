@@ -96,7 +96,7 @@ func writeSessionEntries(_ entries: [String: Double], hmacKey: SymmetricKey) {
 func hasValidSession(for keyName: String) -> Bool {
   let hmacKey = getOrCreateHMACKey()
   let entries = readSessionEntries(hmacKey: hmacKey)
-  let hashedKey = computeHMAC(for: keyName, using: hmacKey)
+  let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: hmacKey)
   guard let lastAuthTime = entries[hashedKey] else { return false }
   let currentTime = Date().timeIntervalSince1970
   return currentTime - lastAuthTime <= reuseDuration()
@@ -105,7 +105,7 @@ func hasValidSession(for keyName: String) -> Bool {
 func updateSession(for keyName: String) {
   let hmacKey = getOrCreateHMACKey()
   var entries = readSessionEntries(hmacKey: hmacKey)
-  let hashedKey = computeHMAC(for: keyName, using: hmacKey)
+  let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: hmacKey)
   let currentTime = Date().timeIntervalSince1970
   // Update this key and prune expired entries
   entries[hashedKey] = currentTime
