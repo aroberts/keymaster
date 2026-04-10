@@ -2,8 +2,16 @@ import CryptoKit
 import Foundation
 import LocalAuthentication
 
+var verbose = false
+
 func printErr(_ message: String) {
   FileHandle.standardError.write(Data((message + "\n").utf8))
+}
+
+func debug(_ message: String) {
+  if verbose {
+    printErr("[debug] \(message)")
+  }
 }
 
 extension Data {
@@ -39,8 +47,10 @@ let defaultReuseDuration: TimeInterval = 300
 func getOrCreateHMACKey() -> SymmetricKey {
   if let existingBase64 = getPassword(key: hmacKeyName),
      let keyData = Data(base64Encoded: existingBase64) {
+    debug("Loaded existing HMAC key from keychain")
     return SymmetricKey(data: keyData)
   }
+  debug("No HMAC key found, generating new key")
   let newKey = SymmetricKey(size: .bits256)
   let keyData = newKey.withUnsafeBytes { Data($0) }
   let base64String = keyData.base64EncodedString()
@@ -76,17 +86,25 @@ func computeHMAC(for message: String, using key: SymmetricKey) -> String {
 
 func readSessionEntries(hmacKey: SymmetricKey) -> [String: Double] {
   guard let sessionData = try? String(contentsOfFile: sessionFilePath, encoding: .utf8) else {
+    debug("No session file at \(sessionFilePath)")
     return [:]
   }
   var lines = sessionData.components(separatedBy: "\n")
     .filter { !$0.isEmpty }
   // Last line is the file-level HMAC
-  guard lines.count >= 2 else { return [:] }
+  guard lines.count >= 2 else {
+    debug("Session file malformed (fewer than 2 lines)")
+    return [:]
+  }
   let fileHMAC = lines.removeLast()
   let body = lines.joined(separator: "\n")
   guard let fileHMACData = Data(hexString: fileHMAC),
         HMAC<SHA256>.isValidAuthenticationCode(fileHMACData, authenticating: Data(body.utf8), using: hmacKey)
-  else { return [:] }
+  else {
+    debug("Session file HMAC verification failed")
+    return [:]
+  }
+  debug("Session file verified, \(lines.count) entry(s)")
   // Parse entries: each line is "hashedKey:timestamp"
   var entries: [String: Double] = [:]
   for line in lines {
@@ -110,9 +128,13 @@ func writeSessionEntries(_ entries: [String: Double], hmacKey: SymmetricKey) {
 }
 
 func withSessionLock<T>(exclusive: Bool, _ body: () -> T) -> T {
+  let mode = exclusive ? "exclusive" : "shared"
   let fd = open(lockFilePath, O_CREAT | O_RDWR, 0o600)
   if fd >= 0 {
+    debug("Acquiring \(mode) lock on \(lockFilePath)")
     flock(fd, exclusive ? LOCK_EX : LOCK_SH)
+  } else {
+    debug("Could not open lock file, proceeding without lock")
   }
   defer {
     if fd >= 0 {
@@ -125,12 +147,23 @@ func withSessionLock<T>(exclusive: Bool, _ body: () -> T) -> T {
 
 func withValidSession(for keyName: String, perform action: () -> Void) -> Bool {
   return withSessionLock(exclusive: false) {
+    let sid = getsid(0)
+    debug("Session leader PID: \(sid)")
     let keys = deriveKeys()
     let entries = readSessionEntries(hmacKey: keys.signing)
-    let hashedKey = computeHMAC(for: "\(keyName)\0\(getsid(0))", using: keys.naming)
-    guard let lastAuthTime = entries[hashedKey] else { return false }
+    let hashedKey = computeHMAC(for: "\(keyName)\0\(sid)", using: keys.naming)
+    guard let lastAuthTime = entries[hashedKey] else {
+      debug("No session entry for key")
+      return false
+    }
     let currentTime = Date().timeIntervalSince1970
-    guard currentTime - lastAuthTime <= reuseDuration() else { return false }
+    let age = currentTime - lastAuthTime
+    let ttl = reuseDuration()
+    guard age <= ttl else {
+      debug("Session expired (age: \(Int(age))s, ttl: \(Int(ttl))s)")
+      return false
+    }
+    debug("Session valid (age: \(Int(age))s, ttl: \(Int(ttl))s)")
     action()
     return true
   }
@@ -144,7 +177,9 @@ func updateSession(for keyName: String) {
     let currentTime = Date().timeIntervalSince1970
     entries[hashedKey] = currentTime
     let ttl = reuseDuration()
+    let before = entries.count
     entries = entries.filter { currentTime - $0.value <= ttl }
+    debug("Session updated, \(entries.count) entry(s) (\(before - entries.count) pruned)")
     writeSessionEntries(entries, hmacKey: keys.signing)
   }
 }
@@ -155,18 +190,25 @@ func reuseDuration() -> TimeInterval {
 }
 
 func usage() {
-  printErr("keymaster [get|delete] <key>")
-  printErr("echo <secret> | keymaster set <key>")
+  printErr("keymaster [-v] [get|delete] <key>")
+  printErr("echo <secret> | keymaster [-v] set <key>")
 }
 
 func main() {
-  let inputArgs: [String] = Array(CommandLine.arguments.dropFirst())
+  var inputArgs: [String] = Array(CommandLine.arguments.dropFirst())
+  if let idx = inputArgs.firstIndex(of: "-v") {
+    verbose = true
+    inputArgs.remove(at: idx)
+  }
   if inputArgs.count != 2 {
     usage()
     exit(EXIT_FAILURE)
   }
   let action = inputArgs[0]
   let key = inputArgs[1]
+  debug("pid: \(getpid()), action: \(action), key: \(key)")
+  debug("Session file: \(sessionFilePath)")
+  debug("TTL: \(Int(reuseDuration()))s")
   var secret = ""
   if action == "set" {
     let data = FileHandle.standardInput.readDataToEndOfFile()
@@ -185,6 +227,7 @@ func main() {
   if acted { exit(EXIT_SUCCESS) }
 
   // No valid session, proceed with TouchID authentication
+  debug("No valid session, requesting TouchID")
   let context = LAContext()
   var error: NSError?
   guard context.canEvaluatePolicy(policy, error: &error) else {
@@ -194,6 +237,7 @@ func main() {
 
   context.evaluatePolicy(policy, localizedReason: "Authenticate to proceed") { success, error in
     if success {
+      debug("TouchID succeeded")
       updateSession(for: key)
       performAction(action: action, key: key, secret: secret)
       exit(EXIT_SUCCESS)
@@ -250,6 +294,9 @@ func getPassword(key: String) -> String? {
   ]
   var item: CFTypeRef?
   let status = SecItemCopyMatching(query as CFDictionary, &item)
+  if status == errSecItemNotFound {
+    return nil
+  }
   if status != errSecSuccess {
     if let errorMessage = SecCopyErrorMessageString(status, nil) {
       printErr("Error getting password: \(errorMessage)")

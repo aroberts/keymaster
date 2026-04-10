@@ -27,7 +27,7 @@ Keymaster fixes this.
 Compile `keymaster.swift` into a binary:
 
 ```bash
-swiftc keymaster.swift -o keymaster
+swiftc -O -o keymaster keymaster.swift -framework LocalAuthentication -framework Security
 ```
 
 Put the `keymaster` binary somewhere in your `$PATH`, or run it directly from
@@ -36,17 +36,28 @@ the project directory.
 ## Usage
 
 ```
-keymaster get <key>              # Retrieve a secret (printed to stdout)
-keymaster set <key> <secret>     # Store a secret
-keymaster delete <key>           # Delete a secret
+keymaster get <key>                       # Retrieve a secret (printed to stdout)
+echo <secret> | keymaster set <key>       # Store a secret (read from stdin)
+keymaster delete <key>                    # Delete a secret
 ```
 
-The first time you `get` a secret, you should "always allow" the `keymaster`
-binary in the Keychain Access prompt. After that, every access will require
-TouchID.
+### First Run — Keychain Prompts
 
-To change a secret, you can use `keymaster set` again or the
-`Keychain Access.app` that comes with your Mac.
+On first use, macOS will show two Keychain Access prompts asking whether to
+allow `keymaster` to access keychain items. Select **Always Allow** for both:
+
+1. **HMAC session key** (`keymaster_session_hmac_key`) — used internally to
+   validate sessions. This is read on every invocation, before TouchID, so it
+   must be accessible without a prompt.
+2. **Your secret** — the actual keychain item you're storing or retrieving.
+
+Keymaster handles authentication itself via TouchID. The keychain is a passive
+store — "Always Allow" makes it transparent, leaving TouchID as the sole
+authentication gate. If you don't select "Always Allow", you'll get a keychain
+dialog on every invocation in addition to TouchID.
+
+To change a secret, delete and re-set it, or edit it directly in
+`Keychain Access.app`.
 
 ### Session TTL
 
@@ -242,8 +253,8 @@ falling back to `$PATH`.
 - The session file is stored in `$TMPDIR` (per-user, mode 700 on macOS) and
   HMAC-signed to prevent forgery. The HMAC key is stored in the keychain and
   generated automatically on first use.
-- During `generate`, the passphrase is briefly visible in the process argument
-  list (passed to `ssh-keygen -N` and `keymaster set`). This is acceptable for
-  single-user machines; on shared systems, consider importing keys instead.
+- Passphrases are never exposed in process arguments. `keymaster set` reads
+  from stdin, and `keymaster-ssh` passes passphrases to `ssh-keygen` via
+  `SSH_ASKPASS` rather than command-line flags.
 - The `KEYMASTER_TTL` setting controls how often TouchID is required. Set it to
   `0` for maximum security (TouchID on every SSH connection).
