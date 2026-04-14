@@ -36,9 +36,14 @@ the project directory.
 ## Usage
 
 ```
-keymaster get <key>                       # Retrieve a secret (printed to stdout)
-echo <secret> | keymaster set <key>       # Store a secret (read from stdin)
-keymaster delete <key>                    # Delete a secret
+keymaster [options] get <key>                       # Retrieve a secret (printed to stdout)
+echo <secret> | keymaster [options] set <key>       # Store a secret (read from stdin)
+keymaster [options] delete <key>                    # Delete a secret
+
+Options:
+  -v                              Enable debug logging (stderr)
+  -s, --session <name>            Override session scope (see Session Groups)
+  -g, --groups-file <path>        Use a custom groups file path
 ```
 
 ### First Run — Keychain Prompts
@@ -63,8 +68,9 @@ To change a secret, delete and re-set it, or edit it directly in
 
 After a successful TouchID authentication, keymaster caches the session for
 that specific key for 5 minutes (300 seconds) by default. Accessing a different
-key within the TTL window still requires TouchID. Configure the TTL with the
-`KEYMASTER_TTL` environment variable:
+key within the TTL window still requires its own TouchID, unless the keys share
+a session group (see below). Configure the TTL with the `KEYMASTER_TTL`
+environment variable:
 
 ```bash
 # Extend to 10 minutes
@@ -81,6 +87,64 @@ Expired entries are pruned automatically.
 The session is HMAC-SHA256 signed using a key stored in the keychain. Key names
 are hashed before being written to the session file, so the file does not reveal
 which keychain entries have been accessed.
+
+### Session Groups
+
+By default, each key maintains an independent session — authenticating for one
+key does not affect another. Session groups let multiple keys share a single
+authentication window, so a TouchID prompt for any key in the group satisfies
+all of them.
+
+Define groups in `~/.config/keymaster/groups`:
+
+```
+# Keys used for deployment
+[deploy]
+ssh_key_passphrase:id_deploy
+ansible_vault
+```
+
+With this configuration, the first `keymaster get` for either key triggers
+TouchID. Subsequent access to either key within the TTL window reuses the
+session — one prompt covers both.
+
+A key may belong to at most one group. If a key appears in multiple groups,
+keymaster exits with an error. Keys not listed in any group behave as before
+(per-key sessions).
+
+#### Overrides
+
+The session scope can be set per-invocation, taking precedence over the groups
+file:
+
+```bash
+# Flag (highest priority)
+keymaster --session deploy get my_other_key
+
+# Environment variable (overrides groups file, overridden by flag)
+export KEYMASTER_SESSION=deploy
+keymaster get my_other_key
+```
+
+This is useful for ad-hoc grouping or for temporarily including a key in an
+existing group's session without editing the config file.
+
+The full resolution order for session scope is: `-s`/`--session` flag, then
+`KEYMASTER_SESSION` environment variable, then the groups file, then the key
+name itself (the default per-key behavior).
+
+#### Custom Groups File Path
+
+The groups file defaults to `~/.config/keymaster/groups`. Override it with the
+`-g`/`--groups-file` flag or the `KEYMASTER_GROUPS_FILE` environment variable:
+
+```bash
+# Flag (highest priority)
+keymaster --groups-file /path/to/groups get my_key
+
+# Environment variable (overridden by flag)
+export KEYMASTER_GROUPS_FILE=/path/to/groups
+```
 
 ## SSH Integration
 
@@ -258,3 +322,26 @@ falling back to `$PATH`.
   `SSH_ASKPASS` rather than command-line flags.
 - The `KEYMASTER_TTL` setting controls how often TouchID is required. Set it to
   `0` for maximum security (TouchID on every SSH connection).
+
+## Testing
+
+`test-sessions.sh` is an interactive test for session groups. It stores three
+temporary secrets, then retrieves them under different session configurations
+with debug output enabled. Because keymaster uses real TouchID, the script
+cannot assert pass/fail automatically — instead it prints what to expect at
+each step so you can verify the prompts you receive.
+
+```bash
+./test-sessions.sh
+```
+
+The script creates three temporary keychain entries (cleaned up on exit) and a
+temporary groups file that places two of the keys in a `[deploy]` group. It
+then runs four retrieval steps:
+
+| Step | What it does | Expected result |
+|------|-------------|-----------------|
+| 1 | `get` key A (in `[deploy]` group) | TouchID prompt |
+| 2 | `get` key B (also in `[deploy]` group) | No prompt (reuses session) |
+| 3 | `get` key C (ungrouped) | TouchID prompt |
+| 4 | `get` key A with `--session custom_session` | TouchID prompt (override) |
