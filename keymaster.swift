@@ -41,11 +41,6 @@ let sessionFilePath: String = {
 let lockFilePath = sessionFilePath + ".lock"
 let hmacKeyName = "keymaster_session_hmac_key"
 
-let defaultGroupsFilePath: String = {
-  let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
-  return home + "/.config/keymaster/groups"
-}()
-
 // Duration for which authentication can be reused (in seconds)
 let defaultReuseDuration: TimeInterval = 300
 
@@ -153,12 +148,14 @@ func withSessionLock<T>(exclusive: Bool, _ body: () -> T) -> T {
 func withValidSession(for keyName: String, sessionName: String? = nil, perform action: () -> Void) -> Bool {
   return withSessionLock(exclusive: false) {
     let sid = getsid(0)
-    debug("Session leader PID: \(sid)")
     let scope = sessionName ?? keyName
+    let bound = sessionName == nil
+    debug("Session leader PID: \(sid)\(bound ? "" : " (unbound, named session)")")
     debug("Session scope: \(scope)\(sessionName != nil ? " (explicit session)" : " (key)")")
     let keys = deriveKeys()
     let entries = readSessionEntries(hmacKey: keys.signing)
-    let hashedKey = computeHMAC(for: "\(scope)\0\(sid)", using: keys.naming)
+    let cacheKeyInput = bound ? "\(scope)\0\(sid)" : scope
+    let hashedKey = computeHMAC(for: cacheKeyInput, using: keys.naming)
     guard let lastAuthTime = entries[hashedKey] else {
       debug("No session entry for key")
       return false
@@ -181,7 +178,8 @@ func updateSession(for keyName: String, sessionName: String? = nil) {
     let scope = sessionName ?? keyName
     let keys = deriveKeys()
     var entries = readSessionEntries(hmacKey: keys.signing)
-    let hashedKey = computeHMAC(for: "\(scope)\0\(getsid(0))", using: keys.naming)
+    let cacheKeyInput = sessionName != nil ? scope : "\(scope)\0\(getsid(0))"
+    let hashedKey = computeHMAC(for: cacheKeyInput, using: keys.naming)
     let currentTime = Date().timeIntervalSince1970
     entries[hashedKey] = currentTime
     let ttl = reuseDuration()
@@ -197,44 +195,9 @@ func reuseDuration() -> TimeInterval {
   return envReuseDuration.flatMap(TimeInterval.init) ?? defaultReuseDuration
 }
 
-func lookupGroup(for keyName: String, in groupsFile: String) -> String? {
-  guard let content = try? String(contentsOfFile: groupsFile, encoding: .utf8) else {
-    debug("No groups file at \(groupsFile)")
-    return nil
-  }
-  var result: String? = nil
-  var currentGroup: String? = nil
-  for line in content.components(separatedBy: "\n") {
-    let trimmed = line.trimmingCharacters(in: .whitespaces)
-    if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-    if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
-      currentGroup = String(trimmed.dropFirst().dropLast())
-        .trimmingCharacters(in: .whitespaces)
-      continue
-    }
-    guard let group = currentGroup else {
-      debug("Groups file: key '\(trimmed)' outside any group, skipping")
-      continue
-    }
-    if trimmed == keyName {
-      if let existing = result {
-        printErr("Key '\(keyName)' appears in multiple groups: '\(existing)' and '\(group)'")
-        exit(EXIT_FAILURE)
-      }
-      result = group
-    }
-  }
-  if let group = result {
-    debug("Key '\(keyName)' belongs to group '\(group)'")
-  } else {
-    debug("Key '\(keyName)' not found in any group")
-  }
-  return result
-}
-
 func usage() {
-  printErr("keymaster [-v] [-s|--session <name>] [-g|--groups-file <path>] [get|delete] <key>")
-  printErr("echo <secret> | keymaster [-v] [-s|--session <name>] [-g|--groups-file <path>] set <key>")
+  printErr("keymaster [-v] [-s|--session <name>] [get|delete] <key>")
+  printErr("echo <secret> | keymaster [-v] [-s|--session <name>] set <key>")
 }
 
 func main() {
@@ -255,26 +218,12 @@ func main() {
   if sessionName == nil {
     sessionName = ProcessInfo.processInfo.environment["KEYMASTER_SESSION"]
   }
-  var groupsFile = defaultGroupsFilePath
-  if let idx = inputArgs.firstIndex(of: "-g") ?? inputArgs.firstIndex(of: "--groups-file") {
-    guard idx + 1 < inputArgs.count else {
-      printErr("Missing value for \(inputArgs[idx])")
-      exit(EXIT_FAILURE)
-    }
-    groupsFile = inputArgs[idx + 1]
-    inputArgs.removeSubrange(idx...idx + 1)
-  } else if let envPath = ProcessInfo.processInfo.environment["KEYMASTER_GROUPS_FILE"] {
-    groupsFile = envPath
-  }
   if inputArgs.count != 2 {
     usage()
     exit(EXIT_FAILURE)
   }
   let action = inputArgs[0]
   let key = inputArgs[1]
-  if sessionName == nil {
-    sessionName = lookupGroup(for: key, in: groupsFile)
-  }
   debug("pid: \(getpid()), action: \(action), key: \(key)")
   debug("Session file: \(sessionFilePath)")
   debug("TTL: \(Int(reuseDuration()))s")
