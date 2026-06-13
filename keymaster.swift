@@ -200,6 +200,44 @@ func usage() {
   printErr("echo <secret> | keymaster [-v] [-s|--session <name>] set <key>")
 }
 
+// Strip characters that could be used to forge a misleading TouchID prompt
+// (newlines, control chars, bidi/zero-width format chars) and cap the length,
+// so an attacker-controlled key or session name can't spoof the dialog text.
+func sanitizeForPrompt(_ value: String) -> String {
+  let scalars = value.unicodeScalars.filter { scalar in
+    switch scalar.properties.generalCategory {
+    case .control, .format, .lineSeparator, .paragraphSeparator:
+      return false
+    default:
+      return true
+    }
+  }
+  let cleaned = String(String.UnicodeScalarView(scalars))
+  let maxLength = 64
+  if cleaned.count > maxLength {
+    return String(cleaned.prefix(maxLength)) + "…"
+  }
+  return cleaned
+}
+
+// Build the TouchID reason string. Naming the key (and session) ties the
+// biometric gesture to a specific action so the user can catch an unexpected
+// access instead of approving a generic prompt reflexively.
+func authReason(action: String, key: String, sessionName: String?) -> String {
+  let verb: String
+  switch action {
+  case "get": verb = "read"
+  case "set": verb = "store"
+  case "delete": verb = "delete"
+  default: verb = sanitizeForPrompt(action)
+  }
+  var reason = "Authenticate to \(verb) \"\(sanitizeForPrompt(key))\""
+  if let sessionName = sessionName {
+    reason += " in session \"\(sanitizeForPrompt(sessionName))\""
+  }
+  return reason
+}
+
 func main() {
   var inputArgs: [String] = Array(CommandLine.arguments.dropFirst())
   if let idx = inputArgs.firstIndex(of: "-v") {
@@ -254,7 +292,9 @@ func main() {
     exit(EXIT_FAILURE)
   }
 
-  context.evaluatePolicy(policy, localizedReason: "Authenticate to proceed") { success, error in
+  let reason = authReason(action: action, key: key, sessionName: sessionName)
+  debug("TouchID reason: \(reason)")
+  context.evaluatePolicy(policy, localizedReason: reason) { success, error in
     if success {
       debug("TouchID succeeded")
       updateSession(for: key, sessionName: sessionName)
