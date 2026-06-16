@@ -24,14 +24,63 @@ Keymaster fixes this.
 
 ## Building
 
-Compile `keymaster.swift` into a binary:
+Build with the provided script, which compiles and code-signs the binary:
+
+```bash
+./build.sh
+```
+
+Put the `keymaster` binary somewhere in your `$PATH`, or run it directly from
+the project directory.
+
+To compile without the script:
 
 ```bash
 swiftc -O -o keymaster keymaster.swift -framework LocalAuthentication -framework Security
 ```
 
-Put the `keymaster` binary somewhere in your `$PATH`, or run it directly from
-the project directory.
+### Code signing (recommended, one-time setup)
+
+`build.sh` signs the binary with a self-signed code-signing identity named
+`keymaster-signing`. This matters because macOS records a binary's Keychain
+trust (the "Always Allow" below) against its code signature. An unsigned binary
+is trusted by its `cdhash`, which changes on every recompile — so each rebuild
+breaks the trust and you get Keychain and TouchID prompts all over again.
+Signing with a stable identity makes the trust survive rebuilds.
+
+If the `keymaster-signing` identity is not present, `build.sh` still builds, but
+unsigned, and prints a warning — expect a prompt on every build until you
+create it.
+
+Create the identity once. The GUI path is Keychain Access → Certificate
+Assistant → Create a Certificate… (Name: `keymaster-signing`, Identity Type:
+Self Signed Root, Certificate Type: Code Signing). If Certificate Assistant
+errors out (it can on migrated systems with a stale keychain search list),
+create it from the command line instead:
+
+```bash
+# Generate a self-signed code-signing cert
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout /tmp/keymaster-signing.key -out /tmp/keymaster-signing.crt \
+  -days 3650 -subj "/CN=keymaster-signing" \
+  -addext "basicConstraints=critical,CA:false" \
+  -addext "keyUsage=critical,digitalSignature" \
+  -addext "extendedKeyUsage=critical,codeSigning"
+
+# Bundle and import into the login keychain, authorizing codesign to use the key
+openssl pkcs12 -export -inkey /tmp/keymaster-signing.key \
+  -in /tmp/keymaster-signing.crt -name keymaster-signing \
+  -out /tmp/keymaster-signing.p12 -passout pass:temp
+security import /tmp/keymaster-signing.p12 \
+  -k ~/Library/Keychains/login.keychain-db -P temp -T /usr/bin/codesign
+
+# Shred the temporary key material — the private key now lives in the keychain
+rm -f /tmp/keymaster-signing.key /tmp/keymaster-signing.crt /tmp/keymaster-signing.p12
+```
+
+The identity shows as untrusted (`CSSMERR_TP_NOT_TRUSTED`) in
+`security find-identity -p codesigning`. That is expected for a self-signed
+cert and does not prevent signing.
 
 ## Usage
 
@@ -59,6 +108,13 @@ Keymaster handles authentication itself via TouchID. The keychain is a passive
 store — "Always Allow" makes it transparent, leaving TouchID as the sole
 authentication gate. If you don't select "Always Allow", you'll get a keychain
 dialog on every invocation in addition to TouchID.
+
+These prompts are recorded against the binary's code signature, so with a stable
+signing identity (see [Code signing](#code-signing-recommended-one-time-setup))
+they are a genuine one-time cost. An unsigned binary is re-prompted on every
+rebuild. Re-signing an already-trusted binary with a *different* identity — for
+instance switching from unsigned to signed the first time — triggers one fresh
+round of prompts, after which it sticks.
 
 To change a secret, delete and re-set it, or edit it directly in
 `Keychain Access.app`.
