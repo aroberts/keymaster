@@ -41,12 +41,13 @@ swiftc -O -o keymaster keymaster.swift -framework LocalAuthentication -framework
 
 ### Code signing (recommended, one-time setup)
 
-`build.sh` signs the binary with a self-signed code-signing identity named
-`keymaster-signing`. This matters because macOS records a binary's Keychain
-trust (the "Always Allow" below) against its code signature. An unsigned binary
-is trusted by its `cdhash`, which changes on every recompile — so each rebuild
-breaks the trust and you get Keychain and TouchID prompts all over again.
-Signing with a stable identity makes the trust survive rebuilds.
+Both `build.sh` (local builds) and `keymaster-resign` (after a Homebrew
+upgrade) sign with a self-signed code-signing identity named `keymaster-signing`.
+This matters because macOS records a binary's Keychain trust (the "Always Allow"
+below) against its code signature. An unsigned binary is trusted by its
+`cdhash`, which changes on every recompile — so each rebuild breaks the trust
+and you get Keychain and TouchID prompts all over again. Signing with a stable
+identity makes the trust survive rebuilds.
 
 If the `keymaster-signing` identity is not present, `build.sh` still builds, but
 unsigned, and prints a warning — expect a prompt on every build until you
@@ -82,6 +83,23 @@ The identity shows as untrusted (`CSSMERR_TP_NOT_TRUSTED`) in
 `security find-identity -p codesigning`. That is expected for a self-signed
 cert and does not prevent signing.
 
+### Re-signing after a Homebrew upgrade
+
+If you install via Homebrew, each `brew upgrade` recompiles keymaster from
+source and re-applies an ad-hoc signature. Homebrew's build runs with an
+isolated `HOME` and sandbox and cannot reach your login keychain, so it cannot
+sign with `keymaster-signing` itself. After an upgrade that rebuilt keymaster,
+re-sign it once:
+
+```bash
+keymaster-resign
+```
+
+This signs the installed `keymaster` binary with the `keymaster-signing`
+identity (override via `KEYMASTER_SIGNING_IDENTITY`), restoring the stable
+designated requirement so the Keychain "Always Allow" trust holds across the
+upgrade. It is harmless to run when the binary is already signed.
+
 ## Usage
 
 ```
@@ -109,11 +127,13 @@ store — "Always Allow" makes it transparent, leaving TouchID as the sole
 authentication gate. If you don't select "Always Allow", you'll get a keychain
 dialog on every invocation in addition to TouchID.
 
-These prompts are recorded against the binary's code signature, so with a stable
-signing identity (see [Code signing](#code-signing-recommended-one-time-setup))
-they are a genuine one-time cost. An unsigned binary is re-prompted on every
-rebuild. Re-signing an already-trusted binary with a *different* identity — for
-instance switching from unsigned to signed the first time — triggers one fresh
+These prompts are recorded against the binary's code signature. Signed with a
+stable identity (see [Code signing](#code-signing-recommended-one-time-setup)),
+they are a one-time cost. An unsigned (ad-hoc) binary is trusted by its cdhash
+and is re-prompted on every rebuild — including each `brew upgrade`, which
+recompiles from source; run
+[`keymaster-resign`](#re-signing-after-a-homebrew-upgrade) afterward to restore
+the trust. The first switch from unsigned to signed also triggers one fresh
 round of prompts, after which it sticks.
 
 To change a secret, delete and re-set it, or edit it directly in

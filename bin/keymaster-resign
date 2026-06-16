@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# keymaster-resign: Re-sign the keymaster binary with a stable self-signed
+# code-signing identity so the macOS Keychain "Always Allow" trust survives a
+# rebuild. `brew upgrade keymaster` recompiles from source and produces a fresh
+# ad-hoc signature (cdhash-based, changes every build), which invalidates the
+# Keychain ACL and re-triggers the prompts. Run this once after such a rebuild.
+#
+# See the "Code signing" section of the README for one-time identity setup.
+
+IDENTITY="${KEYMASTER_SIGNING_IDENTITY:-keymaster-signing}"
+
+# Resolve keymaster binary: check relative to this script first, then PATH.
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ -x "$SCRIPT_DIR/keymaster" ]]; then
+  KEYMASTER="$SCRIPT_DIR/keymaster"
+else
+  KEYMASTER="$(command -v keymaster || true)"
+fi
+
+if [[ -z "${KEYMASTER:-}" || ! -x "$KEYMASTER" ]]; then
+  echo "keymaster-resign: cannot find the keymaster binary" >&2
+  exit 1
+fi
+
+# Follow symlinks to the real Mach-O file (Homebrew puts a bin symlink on PATH
+# pointing into the Cellar; codesign must operate on the actual file).
+target="$KEYMASTER"
+while [[ -L "$target" ]]; do
+  link="$(readlink "$target")"
+  if [[ "$link" = /* ]]; then
+    target="$link"
+  else
+    target="$(cd "$(dirname "$target")" && cd "$(dirname "$link")" && pwd)/$(basename "$link")"
+  fi
+done
+
+if ! /usr/bin/security find-identity -p codesigning 2>/dev/null | grep -qF "\"$IDENTITY\""; then
+  cat >&2 <<EOF
+keymaster-resign: code-signing identity '$IDENTITY' not found.
+
+Create it once (see the "Code signing" section of the keymaster README), or set
+KEYMASTER_SIGNING_IDENTITY to the name of an existing code-signing identity.
+EOF
+  exit 1
+fi
+
+/usr/bin/codesign -f -s "$IDENTITY" -i keymaster "$target"
+echo "keymaster-resign: signed $target with '$IDENTITY'"
