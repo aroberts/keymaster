@@ -152,17 +152,45 @@ func withSessionLock<T>(exclusive: Bool, _ body: () -> T) -> T {
   return body()
 }
 
-func withValidSession(for keyName: String, sessionName: String? = nil, perform action: () -> Void) -> Bool {
+// Derive the cache identity that ties a cached auth to what was approved.
+//
+// - No session name: the requested key, bound to the POSIX session leader
+//   (getsid) so an unrelated same-UID process can't race the TTL window.
+// - Named session without a scope: the requested key only, unbound so it is
+//   shared across processes.
+// - Named session with a scope: every key starting with the scope prefix.
+//
+// The leading tags keep the namespaces from colliding, e.g. a key named the
+// same as a scope prefix.
+func sessionCacheInput(forKey keyName: String, sessionName: String?, scope: String?) -> String {
+  guard let sessionName = sessionName else {
+    return "key\u{0}\(keyName)\u{0}\(getsid(0))"
+  }
+  if let scope = scope {
+    return "session\u{0}\(sessionName)\u{0}prefix\u{0}\(scope)"
+  }
+  return "session\u{0}\(sessionName)\u{0}key\u{0}\(keyName)"
+}
+
+func describeScope(forKey keyName: String, sessionName: String?, scope: String?) -> String {
+  guard let sessionName = sessionName else {
+    return "\"\(keyName)\" bound to session leader \(getsid(0))"
+  }
+  if let scope = scope {
+    return "keys starting with \"\(scope)\" in named session \"\(sessionName)\" (unbound)"
+  }
+  return "\"\(keyName)\" in named session \"\(sessionName)\" (unbound)"
+}
+
+func withValidSession(for keyName: String, sessionName: String?, scope: String?, perform action: () -> Void) -> Bool {
   return withSessionLock(exclusive: false) {
-    let sid = getsid(0)
-    let scope = sessionName ?? keyName
-    let bound = sessionName == nil
-    debug("Session leader PID: \(sid)\(bound ? "" : " (unbound, named session)")")
-    debug("Session scope: \(scope)\(sessionName != nil ? " (explicit session)" : " (key)")")
+    debug("Session scope: \(describeScope(forKey: keyName, sessionName: sessionName, scope: scope))")
     let keys = deriveKeys()
     let entries = readSessionEntries(hmacKey: keys.signing)
-    let cacheKeyInput = bound ? "\(scope)\0\(sid)" : scope
-    let hashedKey = computeHMAC(for: cacheKeyInput, using: keys.naming)
+    let hashedKey = computeHMAC(
+      for: sessionCacheInput(forKey: keyName, sessionName: sessionName, scope: scope),
+      using: keys.naming
+    )
     guard let entry = entries[hashedKey] else {
       debug("No session entry for key")
       return false
@@ -184,13 +212,14 @@ func withValidSession(for keyName: String, sessionName: String? = nil, perform a
   }
 }
 
-func updateSession(for keyName: String, sessionName: String? = nil) {
+func updateSession(for keyName: String, sessionName: String?, scope: String?) {
   withSessionLock(exclusive: true) {
-    let scope = sessionName ?? keyName
     let keys = deriveKeys()
     var entries = readSessionEntries(hmacKey: keys.signing)
-    let cacheKeyInput = sessionName != nil ? scope : "\(scope)\0\(getsid(0))"
-    let hashedKey = computeHMAC(for: cacheKeyInput, using: keys.naming)
+    let hashedKey = computeHMAC(
+      for: sessionCacheInput(forKey: keyName, sessionName: sessionName, scope: scope),
+      using: keys.naming
+    )
     let currentTime = Date().timeIntervalSince1970
     entries[hashedKey] = SessionEntry(authTime: currentTime, expiry: currentTime + reuseDuration())
     let before = entries.count
@@ -206,7 +235,7 @@ func reuseDuration() -> TimeInterval {
 }
 
 func usage() {
-  printErr("keymaster [-v] [-s|--session <name>] [get|delete] <key>")
+  printErr("keymaster [-v] [-s|--session <name> [--scope <prefix>]] [get|delete] <key>")
   printErr("echo <secret> | keymaster [-v] [-s|--session <name>] set <key>")
 }
 
@@ -233,7 +262,7 @@ func sanitizeForPrompt(_ value: String) -> String {
 // Build the TouchID reason string. Naming the key (and session) ties the
 // biometric gesture to a specific action so the user can catch an unexpected
 // access instead of approving a generic prompt reflexively.
-func authReason(action: String, key: String, sessionName: String?) -> String {
+func authReason(action: String, key: String, sessionName: String?, scope: String?) -> String {
   let verb: String
   switch action {
   case "get": verb = "read"
@@ -244,6 +273,11 @@ func authReason(action: String, key: String, sessionName: String?) -> String {
   var reason = "Authenticate to \(verb) \"\(sanitizeForPrompt(key))\""
   if let sessionName = sessionName {
     reason += " in session \"\(sanitizeForPrompt(sessionName))\""
+  }
+  // A scoped approval is reused for other keys, so the prompt has to say which
+  // ones. Only reads warm the cache, so the scope only applies to "get".
+  if action == "get", let scope = scope {
+    reason += ". Also allows reading keys starting with \"\(sanitizeForPrompt(scope))\" for \(Int(reuseDuration()))s"
   }
   return reason
 }
@@ -266,16 +300,43 @@ func main() {
   if sessionName == nil {
     sessionName = ProcessInfo.processInfo.environment["KEYMASTER_SESSION"]
   }
+  var scope: String? = nil
+  if let idx = inputArgs.firstIndex(of: "--scope") {
+    guard idx + 1 < inputArgs.count else {
+      printErr("Missing value for --scope")
+      exit(EXIT_FAILURE)
+    }
+    scope = inputArgs[idx + 1]
+    inputArgs.removeSubrange(idx...idx + 1)
+  }
   if inputArgs.count != 2 {
     usage()
     exit(EXIT_FAILURE)
   }
   let action = inputArgs[0]
   let key = inputArgs[1]
+  // --scope widens one named-session approval to a family of keys. An empty
+  // prefix would cover every key, and the key being accessed must be inside
+  // the scope the user is approving.
+  if let scope = scope {
+    guard sessionName != nil else {
+      printErr("--scope requires a named session (-s/--session or KEYMASTER_SESSION)")
+      exit(EXIT_FAILURE)
+    }
+    guard !scope.isEmpty else {
+      printErr("--scope requires a non-empty key prefix")
+      exit(EXIT_FAILURE)
+    }
+    guard key.hasPrefix(scope) else {
+      printErr("Key \"\(key)\" does not start with --scope prefix \"\(scope)\"")
+      exit(EXIT_FAILURE)
+    }
+  }
   debug("pid: \(getpid()), action: \(action), key: \(key)")
   debug("Session file: \(sessionFilePath)")
   debug("TTL: \(Int(reuseDuration()))s")
   if let s = sessionName { debug("Session name: \(s)") }
+  if let p = scope { debug("Scope prefix: \(p)") }
   var secret = ""
   if action == "set" {
     let data = FileHandle.standardInput.readDataToEndOfFile()
@@ -291,7 +352,7 @@ func main() {
   // TouchID, so approving a read never lets another process overwrite or
   // remove a secret within the TTL window.
   if action == "get" {
-    let acted = withValidSession(for: key, sessionName: sessionName) {
+    let acted = withValidSession(for: key, sessionName: sessionName, scope: scope) {
       performAction(action: action, key: key, secret: secret)
     }
     if acted { exit(EXIT_SUCCESS) }
@@ -299,6 +360,7 @@ func main() {
   } else {
     debug("Action \(action) always requires TouchID")
   }
+
   let context = LAContext()
   var error: NSError?
   guard context.canEvaluatePolicy(policy, error: &error) else {
@@ -306,13 +368,13 @@ func main() {
     exit(EXIT_FAILURE)
   }
 
-  let reason = authReason(action: action, key: key, sessionName: sessionName)
+  let reason = authReason(action: action, key: key, sessionName: sessionName, scope: scope)
   debug("TouchID reason: \(reason)")
   context.evaluatePolicy(policy, localizedReason: reason) { success, error in
     if success {
       debug("TouchID succeeded")
       if action == "get" {
-        updateSession(for: key, sessionName: sessionName)
+        updateSession(for: key, sessionName: sessionName, scope: scope)
       }
       performAction(action: action, key: key, secret: secret)
       exit(EXIT_SUCCESS)

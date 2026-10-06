@@ -109,7 +109,8 @@ keymaster [options] delete <key>                    # Delete a secret
 
 Options:
   -v                              Enable debug logging (stderr)
-  -s, --session <name>            Use a named session shared across keys and processes (see Sessions)
+  -s, --session <name>            Use a named session shared across processes (see Sessions)
+  --scope <prefix>                Let one approval in a named session cover every key starting with <prefix>
 ```
 
 ### First Run — Keychain Prompts
@@ -173,11 +174,11 @@ or process tree, and authenticating for one key does not affect another.
 #### Named sessions
 
 Pass `-s <name>` or set `KEYMASTER_SESSION=<name>` to share auth across
-multiple keys and across unrelated processes:
+unrelated processes:
 
 ```bash
-KEYMASTER_SESSION=aws keymaster get aws_access_key_id
-KEYMASTER_SESSION=aws keymaster get aws_secret_access_key
+KEYMASTER_SESSION=deploy keymaster get vault_password   # TouchID
+KEYMASTER_SESSION=deploy keymaster get vault_password   # cached, even from another process
 ```
 
 A named session is *not* bound to the POSIX session ID — any process running
@@ -185,14 +186,41 @@ as the same user can use the cache within the TTL window as long as it
 provides the same name. This is the right escape hatch for agentic shells
 (each command may run under a fresh `setsid()`) and long-running daemons.
 
+By default a named session covers only the key that was approved. Approving
+`vault_password` in session `deploy` does not unlock any other key.
+
 The flag takes precedence over the environment variable.
+
+##### Covering a family of keys (`--scope`)
+
+When a workflow reads several related keys, `--scope <prefix>` lets one TouchID
+cover every key that starts with the prefix:
+
+```bash
+keymaster -s aws --scope aws_ get aws_access_key_id       # TouchID
+keymaster -s aws --scope aws_ get aws_secret_access_key   # cached
+```
+
+Every call in the workflow passes the same `--scope`, so callers that fetch keys
+one at a time need no coordination. Constraints:
+
+- It requires a named session.
+- The prefix must be non-empty, and the requested key must start with it.
+- A scoped grant is only reused by calls that pass the same session name and the
+  same prefix. An unscoped call in the same session still covers just its key.
+
+There is no environment variable for `--scope`, so a broad grant never comes
+from ambient configuration. The TouchID prompt names the prefix and the TTL,
+e.g. *Authenticate to read "aws_access_key_id" in session "aws". Also allows
+reading keys starting with "aws_" for 300s*.
 
 #### Trust scope
 
 Per-key sessions' SID binding prevents an unrelated same-UID process from
 racing the TTL window to piggyback on a recent auth. Named sessions opt out of
 that binding by design — any same-UID process that knows the name can use the
-cache. The keychain ACL boundary (same-UID, post-TouchID) is the underlying
+cache for the keys the grant covers: the approved key, or the keys under its
+`--scope` prefix. Cached grants only ever satisfy reads. The keychain ACL boundary (same-UID, post-TouchID) is the underlying
 security control; the SID binding is defense-in-depth that named sessions
 trade for cross-process sharing.
 
