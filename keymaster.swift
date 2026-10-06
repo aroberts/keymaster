@@ -84,7 +84,15 @@ func computeHMAC(for message: String, using key: SymmetricKey) -> String {
   return mac.map { String(format: "%02x", $0) }.joined()
 }
 
-func readSessionEntries(hmacKey: SymmetricKey) -> [String: Double] {
+// A cache entry records when TouchID succeeded and when the grant expires.
+// The expiry is fixed by the authenticating process, so a later caller's
+// KEYMASTER_TTL can shorten its own reuse window but never extend a grant.
+struct SessionEntry {
+  let authTime: Double
+  let expiry: Double
+}
+
+func readSessionEntries(hmacKey: SymmetricKey) -> [String: SessionEntry] {
   guard let sessionData = try? String(contentsOfFile: sessionFilePath, encoding: .utf8) else {
     debug("No session file at \(sessionFilePath)")
     return [:]
@@ -105,22 +113,21 @@ func readSessionEntries(hmacKey: SymmetricKey) -> [String: Double] {
     return [:]
   }
   debug("Session file verified, \(lines.count) entry(s)")
-  // Parse entries: each line is "hashedKey:timestamp"
-  var entries: [String: Double] = [:]
+  // Parse entries: each line is "hashedKey:authTime:expiry"
+  var entries: [String: SessionEntry] = [:]
   for line in lines {
-    guard let separatorIndex = line.lastIndex(of: ":"),
-          separatorIndex > line.startIndex else { continue }
-    let hashedKey = String(line[..<separatorIndex])
-    let timestampStr = String(line[line.index(after: separatorIndex)...])
-    if let timestamp = Double(timestampStr) {
-      entries[hashedKey] = timestamp
-    }
+    let fields = line.split(separator: ":", omittingEmptySubsequences: false)
+    guard fields.count == 3,
+          !fields[0].isEmpty,
+          let authTime = Double(fields[1]),
+          let expiry = Double(fields[2]) else { continue }
+    entries[String(fields[0])] = SessionEntry(authTime: authTime, expiry: expiry)
   }
   return entries
 }
 
-func writeSessionEntries(_ entries: [String: Double], hmacKey: SymmetricKey) {
-  let lines = entries.map { "\($0.key):\($0.value)" }
+func writeSessionEntries(_ entries: [String: SessionEntry], hmacKey: SymmetricKey) {
+  let lines = entries.map { "\($0.key):\($0.value.authTime):\($0.value.expiry)" }
   let body = lines.joined(separator: "\n")
   let fileHMAC = computeHMAC(for: body, using: hmacKey)
   let content = body + "\n" + fileHMAC
@@ -156,18 +163,22 @@ func withValidSession(for keyName: String, sessionName: String? = nil, perform a
     let entries = readSessionEntries(hmacKey: keys.signing)
     let cacheKeyInput = bound ? "\(scope)\0\(sid)" : scope
     let hashedKey = computeHMAC(for: cacheKeyInput, using: keys.naming)
-    guard let lastAuthTime = entries[hashedKey] else {
+    guard let entry = entries[hashedKey] else {
       debug("No session entry for key")
       return false
     }
     let currentTime = Date().timeIntervalSince1970
-    let age = currentTime - lastAuthTime
+    let age = currentTime - entry.authTime
     let ttl = reuseDuration()
-    guard age <= ttl else {
-      debug("Session expired (age: \(Int(age))s, ttl: \(Int(ttl))s)")
+    guard currentTime <= entry.expiry else {
+      debug("Session expired (age: \(Int(age))s, granted until \(Int(entry.expiry - entry.authTime))s)")
       return false
     }
-    debug("Session valid (age: \(Int(age))s, ttl: \(Int(ttl))s)")
+    guard age <= ttl else {
+      debug("Session older than caller's TTL (age: \(Int(age))s, ttl: \(Int(ttl))s)")
+      return false
+    }
+    debug("Session valid (age: \(Int(age))s, expires in \(Int(entry.expiry - currentTime))s)")
     action()
     return true
   }
@@ -181,10 +192,9 @@ func updateSession(for keyName: String, sessionName: String? = nil) {
     let cacheKeyInput = sessionName != nil ? scope : "\(scope)\0\(getsid(0))"
     let hashedKey = computeHMAC(for: cacheKeyInput, using: keys.naming)
     let currentTime = Date().timeIntervalSince1970
-    entries[hashedKey] = currentTime
-    let ttl = reuseDuration()
+    entries[hashedKey] = SessionEntry(authTime: currentTime, expiry: currentTime + reuseDuration())
     let before = entries.count
-    entries = entries.filter { currentTime - $0.value <= ttl }
+    entries = entries.filter { currentTime <= $0.value.expiry }
     debug("Session updated, \(entries.count) entry(s) (\(before - entries.count) pruned)")
     writeSessionEntries(entries, hmacKey: keys.signing)
   }

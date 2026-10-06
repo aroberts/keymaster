@@ -153,6 +153,10 @@ export KEYMASTER_TTL=600
 export KEYMASTER_TTL=0
 ```
 
+The TTL in effect when TouchID succeeds sets the expiry of that grant. A later
+call that reuses the grant can shorten its own window with `KEYMASTER_TTL`, but
+cannot extend the grant past its recorded expiry.
+
 The session file lives in `$TMPDIR` (a per-user directory on macOS, mode 700),
 HMAC-SHA256 signed with a key stored in the keychain. Key and session names are
 hashed before being written, so the file does not reveal which entries have
