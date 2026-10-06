@@ -1,0 +1,27 @@
+name: Test
+
+# Swift tests, relay tests, and the integration run (local relay, Go fake
+# phone, and the approval page in headless Chrome). See test.sh.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: relay/go.mod
+
+      - name: Build keymaster
+        run: swiftc -O -o keymaster Sources/*.swift
+
+      - name: Run tests
+        run: ./test.sh
