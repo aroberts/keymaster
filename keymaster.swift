@@ -235,14 +235,14 @@ func reuseDuration() -> TimeInterval {
 }
 
 func usage() {
-  printErr("keymaster [-v] [-s|--session <name> [--scope <prefix>]] [get|delete] <key>")
-  printErr("echo <secret> | keymaster [-v] [-s|--session <name>] set <key>")
+  printErr("keymaster [-v] [--reason <text>] [-s|--session <name> [--scope <prefix>]] [get|delete] <key>")
+  printErr("echo <secret> | keymaster [-v] [--reason <text>] [-s|--session <name>] set <key>")
 }
 
 // Strip characters that could be used to forge a misleading TouchID prompt
 // (newlines, control chars, bidi/zero-width format chars) and cap the length,
 // so an attacker-controlled key or session name can't spoof the dialog text.
-func sanitizeForPrompt(_ value: String) -> String {
+func sanitizeForPrompt(_ value: String, maxLength: Int = 64) -> String {
   let scalars = value.unicodeScalars.filter { scalar in
     switch scalar.properties.generalCategory {
     case .control, .format, .lineSeparator, .paragraphSeparator:
@@ -251,33 +251,172 @@ func sanitizeForPrompt(_ value: String) -> String {
       return true
     }
   }
-  let cleaned = String(String.UnicodeScalarView(scalars))
-  let maxLength = 64
+  // Double quotes delimit caller-supplied values in the prompt, so a value
+  // can't close its own quote and append text that reads as keymaster's.
+  let cleaned = String(String.UnicodeScalarView(scalars)).replacingOccurrences(of: "\"", with: "'")
   if cleaned.count > maxLength {
     return String(cleaned.prefix(maxLength)) + "…"
   }
   return cleaned
 }
 
-// Build the TouchID reason string. Naming the key (and session) ties the
-// biometric gesture to a specific action so the user can catch an unexpected
-// access instead of approving a generic prompt reflexively.
-func authReason(action: String, key: String, sessionName: String?, scope: String?) -> String {
-  let verb: String
-  switch action {
-  case "get": verb = "read"
-  case "set": verb = "store"
-  case "delete": verb = "delete"
-  default: verb = sanitizeForPrompt(action)
+// One process above keymaster. The executable path comes from the kernel
+// (proc_pidpath) and can't be faked by a same-UID caller. argv is whatever the
+// process set, so it is only used to name scripts run by an interpreter.
+struct ProcessEntry {
+  let pid: pid_t
+  let path: String
+  let argv: [String]
+
+  var name: String { (path as NSString).lastPathComponent }
+}
+
+func executablePath(of pid: pid_t) -> String? {
+  var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+  guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
+  return String(cString: buffer)
+}
+
+func parentPID(of pid: pid_t) -> pid_t? {
+  var info = proc_bsdinfo()
+  let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+  guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+  return pid_t(info.pbi_ppid)
+}
+
+// Read argv via KERN_PROCARGS2: an argc word, the saved executable path, NUL
+// padding, then argc NUL-terminated arguments. Fails for other users'
+// processes, which is fine for display.
+func arguments(of pid: pid_t) -> [String] {
+  var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+  var size = 0
+  guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return [] }
+  var buffer = [UInt8](repeating: 0, count: size)
+  guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return [] }
+  let argc = Int(buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) })
+  var index = MemoryLayout<Int32>.size
+  while index < size && buffer[index] != 0 { index += 1 }
+  while index < size && buffer[index] == 0 { index += 1 }
+  var args: [String] = []
+  while args.count < argc && index < size {
+    let start = index
+    while index < size && buffer[index] != 0 { index += 1 }
+    args.append(String(decoding: buffer[start..<index], as: UTF8.self))
+    index += 1
   }
-  var reason = "Authenticate to \(verb) \"\(sanitizeForPrompt(key))\""
-  if let sessionName = sessionName {
+  return args
+}
+
+// Walk from keymaster's parent up to (not including) launchd.
+func processChain() -> [ProcessEntry] {
+  var chain: [ProcessEntry] = []
+  var pid = getppid()
+  while pid > 1 && chain.count < 32 {
+    guard let path = executablePath(of: pid) else { break }
+    chain.append(ProcessEntry(pid: pid, path: path, argv: arguments(of: pid)))
+    guard let parent = parentPID(of: pid), parent != pid else { break }
+    pid = parent
+  }
+  return chain
+}
+
+let shellNames: Set<String> = ["sh", "bash", "zsh", "dash", "fish", "ksh", "tcsh", "csh"]
+let interpreterPrefixes = ["python", "node", "ruby", "perl", "osascript", "bun", "deno"]
+let hiddenProcessNames: Set<String> = ["login", "env"]
+
+// A short name for one process in the prompt, or nil to leave it out.
+// - A shell or interpreter running a script or module is named by that
+//   script. With -c, or interactive, it adds nothing and is skipped.
+// - An app bundle is named by the bundle ("Ghostty" for Ghostty.app).
+// - A binary installed under a version number (Claude Code's
+//   versions/2.1.290) is named by its argv[0].
+func displayName(for entry: ProcessEntry) -> String? {
+  let name = entry.name
+  if hiddenProcessNames.contains(name) { return nil }
+  let lowered = name.lowercased()
+  let isShell = shellNames.contains(lowered)
+  if isShell || interpreterPrefixes.contains(where: { lowered.hasPrefix($0) }) {
+    for arg in entry.argv.dropFirst() {
+      if arg.hasPrefix("-") {
+        if arg == "-c" || (isShell && !arg.hasPrefix("--") && arg.contains("c")) { return nil }
+        continue
+      }
+      return (arg as NSString).lastPathComponent
+    }
+    return nil
+  }
+  if let appRange = entry.path.range(of: ".app/Contents/MacOS/") {
+    let bundlePath = String(entry.path[..<appRange.lowerBound])
+    return ((bundlePath as NSString).lastPathComponent as NSString).deletingPathExtension
+  }
+  if !name.contains(where: \.isLetter), let argv0 = entry.argv.first {
+    return (argv0 as NSString).lastPathComponent
+  }
+  return name
+}
+
+// "ansible-vault-keymaster ← ansible-playbook ← … ← tmux": the nearest
+// callers, then the outermost one, which is usually the terminal, tmux, an
+// app or a launchd job.
+func summarizeChain(_ chain: [ProcessEntry]) -> String {
+  var names: [String] = []
+  for name in chain.compactMap(displayName) where names.last != name {
+    names.append(name)
+  }
+  if names.isEmpty { return "launchd" }
+  if names.count > 4 {
+    names = Array(names.prefix(3)) + ["…", names.last!]
+  }
+  return names.map { sanitizeForPrompt($0, maxLength: 32) }.joined(separator: " ← ")
+}
+
+func abbreviateHome(_ path: String) -> String {
+  let home = NSHomeDirectory()
+  if path == home { return "~" }
+  if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+  return path
+}
+
+// Everything known about one request, gathered once so the prompt and the
+// debug output describe the same thing.
+struct RequestContext {
+  let action: String
+  let key: String
+  let sessionName: String?
+  let scope: String?
+  let reason: String?
+  let ttl: TimeInterval
+  let chain: [ProcessEntry]
+  let workingDirectory: String
+
+  var verb: String {
+    switch action {
+    case "get": return "read"
+    case "set": return "store"
+    case "delete": return "delete"
+    default: return sanitizeForPrompt(action)
+    }
+  }
+}
+
+// Build the TouchID reason string. It states what the gesture approves (the
+// key, session and any scope), who asked (the process chain and directory,
+// which keymaster reads itself), and why, as claimed by the caller. Each part
+// is its own sentence so a long one doesn't run into the next.
+func authReason(for request: RequestContext) -> String {
+  var reason = "Authenticate to \(request.verb) \"\(sanitizeForPrompt(request.key))\""
+  if let sessionName = request.sessionName {
     reason += " in session \"\(sanitizeForPrompt(sessionName))\""
   }
   // A scoped approval is reused for other keys, so the prompt has to say which
   // ones. Only reads warm the cache, so the scope only applies to "get".
-  if action == "get", let scope = scope {
-    reason += ". Also allows reading keys starting with \"\(sanitizeForPrompt(scope))\" for \(Int(reuseDuration()))s"
+  if request.action == "get", let scope = request.scope {
+    reason += ". Also allows reading keys starting with \"\(sanitizeForPrompt(scope))\" for \(Int(request.ttl))s"
+  }
+  reason += ". Requested by \(summarizeChain(request.chain))"
+  reason += " in \(sanitizeForPrompt(abbreviateHome(request.workingDirectory), maxLength: 48))"
+  if let why = request.reason {
+    reason += ". Reason given: \"\(sanitizeForPrompt(why, maxLength: 120))\""
   }
   return reason
 }
@@ -300,6 +439,21 @@ func main() {
   if sessionName == nil {
     sessionName = ProcessInfo.processInfo.environment["KEYMASTER_SESSION"]
   }
+  // --reason is the caller's own account of why it wants the key. It is shown
+  // as a claim, so an environment variable is fine: it can't widen access.
+  var callerReason: String? = nil
+  if let idx = inputArgs.firstIndex(of: "--reason") {
+    guard idx + 1 < inputArgs.count else {
+      printErr("Missing value for --reason")
+      exit(EXIT_FAILURE)
+    }
+    callerReason = inputArgs[idx + 1]
+    inputArgs.removeSubrange(idx...idx + 1)
+  }
+  if callerReason == nil {
+    callerReason = ProcessInfo.processInfo.environment["KEYMASTER_REASON"]
+  }
+  if callerReason?.isEmpty == true { callerReason = nil }
   var scope: String? = nil
   if let idx = inputArgs.firstIndex(of: "--scope") {
     guard idx + 1 < inputArgs.count else {
@@ -337,6 +491,19 @@ func main() {
   debug("TTL: \(Int(reuseDuration()))s")
   if let s = sessionName { debug("Session name: \(s)") }
   if let p = scope { debug("Scope prefix: \(p)") }
+  let request = RequestContext(
+    action: action,
+    key: key,
+    sessionName: sessionName,
+    scope: scope,
+    reason: callerReason,
+    ttl: reuseDuration(),
+    chain: processChain(),
+    workingDirectory: FileManager.default.currentDirectoryPath
+  )
+  for entry in request.chain {
+    debug("Caller: \(entry.pid) \(entry.path) \(entry.argv.dropFirst().joined(separator: " "))")
+  }
   var secret = ""
   if action == "set" {
     let data = FileHandle.standardInput.readDataToEndOfFile()
@@ -368,7 +535,7 @@ func main() {
     exit(EXIT_FAILURE)
   }
 
-  let reason = authReason(action: action, key: key, sessionName: sessionName, scope: scope)
+  let reason = authReason(for: request)
   debug("TouchID reason: \(reason)")
   context.evaluatePolicy(policy, localizedReason: reason) { success, error in
     if success {

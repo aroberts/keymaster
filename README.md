@@ -111,6 +111,12 @@ Options:
   -v                              Enable debug logging (stderr)
   -s, --session <name>            Use a named session shared across processes (see Sessions)
   --scope <prefix>                Let one approval in a named session cover every key starting with <prefix>
+  --reason <text>                 Say why the key is needed; shown in the prompt as the caller's claim
+
+Environment:
+  KEYMASTER_SESSION               Named session, if -s is not given
+  KEYMASTER_REASON                Reason, if --reason is not given
+  KEYMASTER_TTL                   Cache window in seconds (default 300)
 ```
 
 ### First Run — Keychain Prompts
@@ -223,6 +229,26 @@ cache for the keys the grant covers: the approved key, or the keys under its
 `--scope` prefix. Cached grants only ever satisfy reads. The keychain ACL boundary (same-UID, post-TouchID) is the underlying
 security control; the SID binding is defense-in-depth that named sessions
 trade for cross-process sharing.
+
+### What the prompt shows
+
+The TouchID prompt states what the gesture approves, who asked, and why:
+
+> Authenticate to read "vault_password" in session "deploy". Requested by
+> ansible-vault-keymaster ← ansible-playbook ← secret ← … ← tmux in
+> ~/Source/pcrn-mgmt. Reason given: "fix paperless mail"
+
+- **What**: the action, the key, the session, and any `--scope` prefix with its
+  TTL.
+- **Who**: keymaster walks up its parent processes. It names the nearest
+  callers and the outermost one, which is usually the terminal, tmux, an app or
+  a launchd job, plus the working directory. Executable paths come from the
+  kernel. A shell or interpreter is named by the script it runs. That name
+  comes from the process's arguments, which the caller controls. A shell
+  running `-c` or interactively is left out.
+- **Why**: `--reason <text>` or `KEYMASTER_REASON`. keymaster can't check it,
+  so the prompt labels it "Reason given". An environment variable is fine here,
+  because a reason can't widen access.
 
 ## SSH Integration
 
