@@ -141,8 +141,9 @@ To change a secret, delete and re-set it, or edit it directly in
 
 ### Sessions
 
-After a successful TouchID authentication, keymaster caches the auth so that
-subsequent calls within a TTL window can skip the prompt. The default TTL is
+After a successful TouchID authentication for `get`, keymaster caches the auth
+so that subsequent reads within a TTL window can skip the prompt. `set` and
+`delete` always require TouchID, and never warm the cache. The default TTL is
 5 minutes (300 seconds); configure with `KEYMASTER_TTL`:
 
 ```bash

@@ -287,14 +287,18 @@ func main() {
     if secret.hasSuffix("\n") { secret.removeLast() }
   }
 
-  // Check if there is a valid session for this key
-  let acted = withValidSession(for: key, sessionName: sessionName) {
-    performAction(action: action, key: key, secret: secret)
+  // Only reads reuse a cached approval. Writes and deletes always need a fresh
+  // TouchID, so approving a read never lets another process overwrite or
+  // remove a secret within the TTL window.
+  if action == "get" {
+    let acted = withValidSession(for: key, sessionName: sessionName) {
+      performAction(action: action, key: key, secret: secret)
+    }
+    if acted { exit(EXIT_SUCCESS) }
+    debug("No valid session, requesting TouchID")
+  } else {
+    debug("Action \(action) always requires TouchID")
   }
-  if acted { exit(EXIT_SUCCESS) }
-
-  // No valid session, proceed with TouchID authentication
-  debug("No valid session, requesting TouchID")
   let context = LAContext()
   var error: NSError?
   guard context.canEvaluatePolicy(policy, error: &error) else {
@@ -307,7 +311,9 @@ func main() {
   context.evaluatePolicy(policy, localizedReason: reason) { success, error in
     if success {
       debug("TouchID succeeded")
-      updateSession(for: key, sessionName: sessionName)
+      if action == "get" {
+        updateSession(for: key, sessionName: sessionName)
+      }
       performAction(action: action, key: key, secret: secret)
       exit(EXIT_SUCCESS)
     } else {
