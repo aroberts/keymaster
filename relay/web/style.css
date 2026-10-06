@@ -1,0 +1,112 @@
+:root {
+  --bg: #f6f6f4;
+  --fg: #1d1d1b;
+  --muted: #6b6b66;
+  --card: #ffffff;
+  --border: #deded8;
+  --accent: #1f5fd1;
+  --accent-fg: #ffffff;
+  --danger: #b3261e;
+  --ok: #1e7a3c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615;
+    --fg: #ececea;
+    --muted: #9a9a94;
+    --card: #20201f;
+    --border: #34342f;
+    --accent: #5b8ff0;
+    --accent-fg: #0d0d0c;
+    --danger: #f2827a;
+    --ok: #6fd18f;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+main {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 4px 0 8px;
+  font-size: 24px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.summary { margin: 0 0 16px; color: var(--muted); }
+
+dl {
+  margin: 0;
+  padding: 4px 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+dl:empty { display: none; }
+
+dt {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+dd {
+  margin: 2px 0 12px;
+  overflow-wrap: anywhere;
+}
+
+dd.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; }
+dd.claim { font-style: italic; }
+dd.warn { color: var(--danger); }
+
+.expiry { color: var(--muted); font-size: 14px; }
+
+.actions {
+  display: flex;
+  gap: 12px;
+  margin: 20px 0 8px;
+}
+
+.actions[hidden] { display: none; }
+
+button {
+  flex: 1;
+  min-height: 48px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button.secondary { background: var(--card); color: var(--danger); }
+button:disabled { opacity: 0.5; cursor: default; }
+
+.status { min-height: 1.5em; font-weight: 600; overflow-wrap: anywhere; }
+.status.ok { color: var(--ok); }
+.status.error { color: var(--danger); }
+
+.note { color: var(--muted); font-size: 13px; margin-top: 32px; }

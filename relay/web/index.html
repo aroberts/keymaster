@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>keymaster approval</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">keymaster</p>
+    <h1 id="title">Loading request…</h1>
+    <p id="summary" class="summary"></p>
+    <dl id="fields"></dl>
+    <p id="expiry" class="expiry"></p>
+    <div id="actions" class="actions" hidden>
+      <button id="approve" type="button" class="primary"></button>
+      <button id="deny" type="button" class="secondary">Deny</button>
+    </div>
+    <p id="status" class="status" role="status"></p>
+    <p class="note">This page comes from the relay, which keymaster does not
+    trust. Your Face ID signs a hash of the request shown here, and keymaster
+    checks that hash against the request it actually sent.</p>
+  </main>
+</body>
+</html>
