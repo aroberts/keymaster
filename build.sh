@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 SIGNING_IDENTITY="keymaster-signing"
 
 build() {
-  swiftc -O -o keymaster keymaster.swift -framework LocalAuthentication -framework Security
+  swiftc -O -o keymaster Sources/*.swift
 }
 
 if security find-identity -p codesigning | grep -qF "\"$SIGNING_IDENTITY\""; then

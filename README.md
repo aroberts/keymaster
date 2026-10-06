@@ -36,7 +36,7 @@ the project directory.
 To compile without the script:
 
 ```bash
-swiftc -O -o keymaster keymaster.swift -framework LocalAuthentication -framework Security
+swiftc -O -o keymaster Sources/*.swift
 ```
 
 ### Code signing (recommended, one-time setup)
