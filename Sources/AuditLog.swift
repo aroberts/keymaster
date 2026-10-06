@@ -8,7 +8,7 @@ let auditLogMaxBytes: off_t = 1_000_000
 // logged by executable path and display name only: ancestors' argv can hold
 // whole command lines, including secrets. There is deliberately no setting to
 // turn the log off or move it, since a caller could set that too.
-func auditLog(_ request: RequestContext, outcome: String, error: String? = nil) {
+func auditLog(_ request: RequestContext, outcome: String, error: String? = nil, extra: [String: Any] = [:]) {
   var record: [String: Any] = [
     "ts": ISO8601DateFormatter().string(from: Date()),
     "pid": Int(getpid()),
@@ -28,6 +28,7 @@ func auditLog(_ request: RequestContext, outcome: String, error: String? = nil) 
   if let reason = request.reason { record["reason"] = reason }
   if outcome != "cached" && request.action == "get" { record["ttl"] = Int(request.ttl) }
   if let error = error { record["error"] = error }
+  record.merge(extra) { current, _ in current }
   guard var line = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys, .withoutEscapingSlashes]) else {
     return
   }

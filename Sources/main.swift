@@ -1,11 +1,10 @@
 import Foundation
 import LocalAuthentication
 
-let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
-
 func usage() {
-  printErr("keymaster [-v] [--reason <text>] [-s|--session <name> [--scope <prefix>]] [get|delete] <key>")
+  printErr("keymaster [-v] [--approve local|remote|auto] [--reason <text>] [-s|--session <name> [--scope <prefix>]] [get|delete] <key>")
   printErr("echo <secret> | keymaster [-v] [--reason <text>] [-s|--session <name>] set <key>")
+  printErr("keymaster remote setup|enroll|list|revoke|allow|disallow|test  (keymaster remote help)")
 }
 
 func main() {
@@ -13,6 +12,9 @@ func main() {
   if let idx = inputArgs.firstIndex(of: "-v") {
     verbose = true
     inputArgs.remove(at: idx)
+  }
+  if inputArgs.first == "remote" {
+    runRemoteCommand(Array(inputArgs.dropFirst()))
   }
   var sessionName: String? = nil
   if let idx = inputArgs.firstIndex(of: "-s") ?? inputArgs.firstIndex(of: "--session") {
@@ -50,6 +52,23 @@ func main() {
     scope = inputArgs[idx + 1]
     inputArgs.removeSubrange(idx...idx + 1)
   }
+  // --approve picks how a request that misses the cache is approved. The
+  // environment variable is allowed because scheduled runs can only set the
+  // mode that way, and every mode still needs a person's approval.
+  var approvalName = ProcessInfo.processInfo.environment["KEYMASTER_APPROVE"]
+  if let idx = inputArgs.firstIndex(of: "--approve") {
+    guard idx + 1 < inputArgs.count else {
+      printErr("Missing value for --approve")
+      exit(EXIT_FAILURE)
+    }
+    approvalName = inputArgs[idx + 1]
+    inputArgs.removeSubrange(idx...idx + 1)
+  }
+  if approvalName?.isEmpty == true { approvalName = nil }
+  guard let approvalMode = ApprovalMode(rawValue: approvalName ?? "local") else {
+    printErr("--approve must be local, remote or auto")
+    exit(EXIT_FAILURE)
+  }
   if inputArgs.count != 2 {
     usage()
     exit(EXIT_FAILURE)
@@ -78,6 +97,11 @@ func main() {
   debug("TTL: \(Int(reuseDuration()))s")
   if let s = sessionName { debug("Session name: \(s)") }
   if let p = scope { debug("Scope prefix: \(p)") }
+  debug("Approval mode: \(approvalMode.rawValue)")
+  if action == "set" && key.hasPrefix(reservedPrefix) {
+    printErr("\(key) is managed by \"keymaster remote\"; set it there")
+    exit(EXIT_FAILURE)
+  }
   let request = RequestContext(
     action: action,
     key: key,
@@ -104,63 +128,92 @@ func main() {
 
   // Only reads reuse a cached approval. Writes and deletes always need a fresh
   // TouchID, so approving a read never lets another process overwrite or
-  // remove a secret within the TTL window.
-  if action == "get" {
+  // remove a secret within the TTL window. keymaster's own items never use the
+  // cache, so a scope that happens to cover them can't release them.
+  let cacheable = action == "get" && !isReservedKey(key)
+  if cacheable {
     let acted = withValidSession(for: key, sessionName: sessionName, scope: scope) {
       auditLog(request, outcome: "cached")
       performAction(action: action, key: key, secret: secret)
     }
     if acted { exit(EXIT_SUCCESS) }
-    debug("No valid session, requesting TouchID")
+    debug("No valid session, requesting approval")
   } else {
-    debug("Action \(action) always requires TouchID")
+    debug("\(key) with action \(action) always requires a fresh approval")
+  }
+
+  // Decide between TouchID and the phone. Remote settings load only when the
+  // mode could use them, so the default path doesn't touch them.
+  let setup = approvalMode == .local ? nil : RemoteSetup.load()
+  let remoteBlocker = setup?.ineligibility(for: request)
+  var fallbackAfter: TimeInterval? = nil
+  switch approvalMode {
+  case .local:
+    break
+  case .remote:
+    if let why = remoteBlocker {
+      auditLog(request, outcome: "denied", error: "can't approve remotely: \(why)", extra: ["approval": "remote"])
+      printErr("Can't approve remotely: \(why)")
+      exit(EXIT_FAILURE)
+    }
+    approveRemotelyAndExit(request, setup: setup!, secret: secret)
+  case .auto:
+    if let why = remoteBlocker {
+      debug("Auto mode stays local: \(why)")
+    } else if screenIsLocked() {
+      debug("Screen is locked, asking the phone")
+      approveRemotelyAndExit(request, setup: setup!, secret: secret)
+    } else {
+      fallbackAfter = localTimeout()
+    }
   }
 
   let context = LAContext()
   var error: NSError?
   guard context.canEvaluatePolicy(policy, error: &error) else {
+    if fallbackAfter != nil {
+      debug("TouchID unavailable (\(error?.localizedDescription ?? "unknown")), asking the phone")
+      approveRemotelyAndExit(request, setup: setup!, secret: secret)
+    }
     printErr("This Mac doesn't support deviceOwnerAuthenticationWithBiometrics")
     exit(EXIT_FAILURE)
+  }
+
+  // In auto mode, give up on TouchID after the timeout and ask the phone.
+  // timedOut is only touched on the main queue.
+  var timedOut = false
+  if let timeout = fallbackAfter {
+    DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+      debug("TouchID not answered in \(Int(timeout))s")
+      timedOut = true
+      context.invalidate()
+    }
   }
 
   let reason = authReason(for: request)
   debug("TouchID reason: \(reason)")
   context.evaluatePolicy(policy, localizedReason: reason) { success, error in
-    if success {
-      debug("TouchID succeeded")
-      auditLog(request, outcome: "approved")
-      if action == "get" {
-        updateSession(for: key, sessionName: sessionName, scope: scope)
+    DispatchQueue.main.async {
+      if success {
+        debug("TouchID succeeded")
+        auditLog(request, outcome: "approved", extra: ["approval": "touchid"])
+        if cacheable {
+          updateSession(for: key, sessionName: sessionName, scope: scope)
+        }
+        performAction(action: action, key: key, secret: secret)
+        exit(EXIT_SUCCESS)
       }
-      performAction(action: action, key: key, secret: secret)
-      exit(EXIT_SUCCESS)
-    } else {
+      if fallbackAfter != nil && (timedOut || touchIDUnanswerable(error)) {
+        printErr("TouchID went unanswered; asking your phone instead")
+        approveRemotelyAndExit(request, setup: setup!, secret: secret)
+      }
       let message = error?.localizedDescription ?? "Unknown error"
-      auditLog(request, outcome: "denied", error: message)
+      auditLog(request, outcome: "denied", error: message, extra: ["approval": "touchid"])
       printErr("Authentication failed or was canceled: \(message)")
       exit(EXIT_FAILURE)
     }
   }
   dispatchMain()
-}
-
-func performAction(action: String, key: String, secret: String) {
-  if action == "set" {
-    guard setPassword(key: key, password: secret) else {
-      exit(EXIT_FAILURE)
-    }
-    printErr("Key \(key) has been successfully set in the keychain")
-  } else if action == "get" {
-    guard let password = getPassword(key: key) else {
-      exit(EXIT_FAILURE)
-    }
-    print(password)
-  } else if action == "delete" {
-    guard deletePassword(key: key) else {
-      exit(EXIT_FAILURE)
-    }
-    printErr("Key \(key) has been successfully deleted from the keychain")
-  }
 }
 
 main()

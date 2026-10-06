@@ -60,6 +60,14 @@ function formatDuration(seconds) {
 }
 
 function renderApprove(r) {
+  if (r.action === "test") {
+    $("title").textContent = "Test approval";
+    $("summary").textContent = `from ${r.user}@${r.host}. Approving releases nothing.`;
+    addField("Requested by", r.caller, "mono");
+    addField("Request code", code(challenge, 4), "mono");
+    $("approve").textContent = "Approve with Face ID";
+    return;
+  }
   const verb = verbs[r.action] || r.action;
   $("title").textContent = `${verb} “${r.key}”`;
   $("summary").textContent = `on ${r.user}@${r.host}`;
