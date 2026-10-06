@@ -33,6 +33,11 @@ Build with the provided script, which compiles and code-signs the binary:
 Put the `keymaster` binary somewhere in your `$PATH`, or run it directly from
 the project directory.
 
+`./test.sh` runs the tests. They never touch the keychain or TouchID. With Go
+installed it also runs the relay's tests and an end-to-end run against a local
+relay. With Node and Google Chrome it also drives the real approval page in
+headless Chrome with a virtual passkey.
+
 To compile without the script:
 
 ```bash
@@ -112,11 +117,17 @@ Options:
   -s, --session <name>            Use a named session shared across processes (see Sessions)
   --scope <prefix>                Let one approval in a named session cover every key starting with <prefix>
   --reason <text>                 Say why the key is needed; shown in the prompt as the caller's claim
+  --approve local|remote|auto     How a read that misses the cache is approved (see Remote approval)
+
+keymaster remote <command>                          # Set up and manage phone approval (see Remote approval)
 
 Environment:
   KEYMASTER_SESSION               Named session, if -s is not given
   KEYMASTER_REASON                Reason, if --reason is not given
   KEYMASTER_TTL                   Cache window in seconds (default 300)
+  KEYMASTER_APPROVE               Approval mode, if --approve is not given (default local)
+  KEYMASTER_LOCAL_TIMEOUT         auto mode: seconds to wait for TouchID before asking the phone (default 20)
+  KEYMASTER_REMOTE_TIMEOUT        Seconds the phone has to answer (default 300, 30–900)
 ```
 
 ### First Run — Keychain Prompts
@@ -260,7 +271,9 @@ Every access appends one JSON line to `~/Library/Logs/keymaster.log` (mode
 {"action":"get","caller":"claude ← tmux","chain":[...],"cwd":"/Users/you/Source/pcrn-mgmt","key":"vault_password","outcome":"cached","pid":4242,"reason":"fix paperless mail","session":"deploy","ts":"2026-10-06T03:44:04Z"}
 ```
 
-`outcome` is `approved`, `cached` or `denied`. `chain` lists each caller's pid,
+`outcome` is `approved`, `cached` or `denied` (`enrolled` for a new passkey).
+`approval` says whether TouchID (`touchid`) or the phone (`remote`) decided, and
+a remote approval also names the passkey in `credential`. `chain` lists each caller's pid,
 executable path and display name. Callers' arguments are not logged, because a
 shell's `-c` argument can contain secrets. The log rolls over to
 `keymaster.log.1` at about 1 MB. There is no setting to turn it off or move it,
@@ -269,6 +282,88 @@ because a caller could set that too.
 ```bash
 tail -f ~/Library/Logs/keymaster.log | jq -c '{ts, outcome, key, caller, reason}'
 ```
+
+## Remote approval
+
+When nobody is at the Mac, a read can be approved from a phone with Face ID.
+TouchID stays the default; the phone is only used when asked for.
+
+The phone side is a web page and a passkey in iCloud Keychain. No app is
+installed. A small relay (`relay/`, published as
+`ghcr.io/aroberts/keymaster-relay`) carries the request to the phone and the
+passkey's signature back. keymaster checks the signature itself against the
+request it sent, so the relay can't approve anything. See
+[docs/remote-approval.md](docs/remote-approval.md) for the protocol and threat
+model, and [relay/README.md](relay/README.md) to deploy the relay.
+
+### Setup
+
+Every step that changes what the phone can approve needs local TouchID. None
+of them can be approved from the phone.
+
+```bash
+# 1. Point keymaster at your relay. Prompts for the relay token and,
+#    optionally, a Pushover user key and app token for notifications.
+keymaster remote setup --relay https://approve.example.com
+
+# 2. Create a passkey on your phone. Scan the QR code it prints (or tap the
+#    Pushover notification) and confirm the fingerprint matches.
+keymaster remote enroll --label "iPhone"
+
+# 3. Choose which keys the phone may approve. The list starts empty.
+keymaster remote allow ci_deploy_token          # one key
+keymaster remote allow 'fidelity_scraper_*'     # every key with this prefix (quote the *)
+
+# 4. Check the whole round trip. Approving releases nothing.
+keymaster remote test
+```
+
+`keymaster remote list` shows the relay, the enrolled passkeys and the
+allowlist. `revoke` and `disallow` undo `enroll` and `allow`.
+
+### Approval modes
+
+```bash
+keymaster --approve remote get ci_deploy_token     # skip TouchID, ask the phone
+KEYMASTER_APPROVE=auto scheduled-job.sh            # TouchID, falling back to the phone
+```
+
+- `local` (default): TouchID only.
+- `remote`: ask the phone. Fails at once if the key isn't eligible.
+- `auto`: ask the phone at once if the screen is locked or TouchID is
+  unavailable (for example, the lid is closed). Otherwise show TouchID and ask
+  the phone if nobody answers within `KEYMASTER_LOCAL_TIMEOUT` seconds.
+  Cancelling the TouchID prompt is a no and does not fall back. A key that
+  isn't eligible stays on TouchID.
+
+A key is eligible for the phone only when all of these hold:
+
+- the action is `get`;
+- it is on the allowlist;
+- with `--scope`, the whole scope is under an allowlisted prefix.
+
+keymaster's own items (`keymaster_remote_*` and the session HMAC key) are never
+eligible, and are never served from the session cache either.
+
+The phone page shows the same facts as the TouchID prompt: key, session,
+scope and TTL, the calling processes and directory, and the caller's reason. It
+also shows a request code that keymaster prints in the terminal. A remote
+approval warms the session cache exactly like TouchID.
+
+An environment variable can set the mode, unlike `--scope`. A scheduled run can
+only set it that way, and every mode still needs a person to approve.
+
+### Waiting on the phone from an agent
+
+A remote approval can take minutes. Claude Code's Bash tool times out after
+120 seconds by default, so either raise the tool timeout for the command that
+reads the key, or warm the session first in a call with a long timeout:
+
+```bash
+KEYMASTER_APPROVE=remote keymaster -s nightly --scope ci_ get ci_deploy_token >/dev/null
+```
+
+The Mac must be awake for a scheduled run to reach keymaster at all.
 
 ## SSH Integration
 
