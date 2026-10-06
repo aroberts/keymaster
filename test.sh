@@ -19,7 +19,14 @@ swiftc -o "$build_dir/keymaster-tests" "${sources[@]}" Tests/*.swift
 if command -v go >/dev/null; then
   (cd relay && go vet ./... && go test ./...)
   (cd relay && go build -o "$build_dir/relay" . && go build -o "$build_dir/fakephone" ./cmd/fakephone)
-  KM_RELAY="$build_dir/relay" KM_FAKEPHONE="$build_dir/fakephone" "$build_dir/keymaster-tests"
+  # The approval page runs in headless Chrome when Node and Chrome are around.
+  chrome="${KM_CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+  browser=""
+  if [[ -z "${KM_SKIP_BROWSER:-}" ]] && command -v node >/dev/null && [[ -x "$chrome" ]]; then
+    browser="$PWD/Tests/browser-phone.mjs"
+  fi
+  KM_RELAY="$build_dir/relay" KM_FAKEPHONE="$build_dir/fakephone" KM_BROWSER_PHONE="$browser" \
+    "$build_dir/keymaster-tests"
 else
   echo "go not found; skipping relay and integration tests" >&2
   "$build_dir/keymaster-tests"

@@ -302,6 +302,107 @@ do {
   }
 }
 
+// MARK: - The real page in headless Chrome
+
+// Drive Tests/browser-phone.mjs: one line in per page, one JSON line out.
+final class BrowserPhone {
+  let process = Process()
+  let input = Pipe()
+  let output = Pipe()
+  var buffer = Data()
+
+  init(script: String) {
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["node", script]
+    process.standardInput = input
+    process.standardOutput = output
+    try! process.run()
+  }
+
+  func open(_ action: String, _ url: URL) {
+    input.fileHandleForWriting.write(Data("\(action) \(url.absoluteString)\n".utf8))
+  }
+
+  func readResult() -> [String: Any] {
+    while !buffer.contains(UInt8(ascii: "\n")) {
+      let chunk = output.fileHandleForReading.availableData
+      if chunk.isEmpty { return [:] }
+      buffer += chunk
+    }
+    let newline = buffer.firstIndex(of: UInt8(ascii: "\n"))!
+    let line = buffer[buffer.startIndex..<newline]
+    buffer = Data(buffer[(newline + 1)...])
+    return (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] ?? [:]
+  }
+
+  func close() {
+    try? input.fileHandleForWriting.close()
+    process.waitUntilExit()
+  }
+}
+
+func browserTests(script: String, port: Int, token: String) {
+  section("integration: approval page in headless Chrome")
+  // WebAuthn needs a hostname, so the browser reaches the relay as localhost.
+  let base = URL(string: "http://localhost:\(port)")!
+  let client = RelayClient(baseURL: base, token: token)
+  let config = RemoteConfig(relayURL: base.absoluteString, relayToken: token, pushoverToken: nil, pushoverUser: nil)
+  let phone = BrowserPhone(script: script)
+  defer { phone.close() }
+
+  let enroll = makeEnrollRequest(label: "browser", lifetime: 60)
+  try? client.create(enroll)
+  phone.open("approve", client.pageURL(for: enroll))
+  var credential: EnrolledCredential? = nil
+  if case .responded(let response) = client.waitForResult(enroll) {
+    do {
+      credential = try verifyEnrollment(response, for: enroll, rpId: config.rpId!, origin: config.origin!, label: "browser")
+    } catch {
+      check(false, "browser enrollment rejected: \(error)")
+    }
+  }
+  let enrollPage = phone.readResult()
+  check(credential != nil, "browser enrollment verifies (page: \(enrollPage))")
+  let fields = enrollPage["fields"] as? [String: String] ?? [:]
+  check(fields["Key fingerprint"] == credential?.fingerprint, "page and keymaster show the same fingerprint")
+  check(fields["Request code"] == enroll.code, "page shows keymaster's request code")
+  let credentials = credential.map { [$0] } ?? []
+
+  let context = RequestContext(
+    action: "get", key: "svc/<b>key</b>", sessionName: "deploy", scope: "svc/", reason: "<img src=x onerror=alert(1)>",
+    ttl: 300, chain: [], workingDirectory: "/tmp"
+  )
+  let approve = makeApprovalRequest(for: context, lifetime: 60)
+  try? client.create(approve)
+  phone.open("approve", client.pageURL(for: approve))
+  if case .responded(let response) = client.waitForResult(approve) {
+    do {
+      let signer = try verifyAssertion(response, for: approve, credentials: credentials)
+      check(signer == credential, "assertion from the page verifies")
+    } catch {
+      check(false, "assertion from the page rejected: \(error)")
+    }
+  } else {
+    check(false, "page did not answer the approval request")
+  }
+  let approvePage = phone.readResult()
+  let approveFields = approvePage["fields"] as? [String: String] ?? [:]
+  check(approvePage["title"] as? String == "Read “svc/<b>key</b>”", "page title names the key as text: \(approvePage["title"] ?? "nil")")
+  check(approveFields["Reason given by the caller"] == "<img src=x onerror=alert(1)>", "reason is rendered as text")
+  check(approveFields["Also allows"]?.contains("“svc/”") == true, "page shows the scope")
+  check(approveFields["Request code"] == approve.code, "page shows keymaster's request code")
+
+  let deny = makeApprovalRequest(for: context, lifetime: 60)
+  try? client.create(deny)
+  phone.open("deny", client.pageURL(for: deny))
+  if case .denied = client.waitForResult(deny) {
+    check(true, "")
+  } else {
+    check(false, "deny on the page was not reported as denied")
+  }
+  check(phone.readResult()["status"] as? String == "Denied.", "page shows the deny")
+}
+
 // MARK: - Integration with a real relay and the Go fake phone
 
 func runProcess(_ path: String, _ args: [String], env: [String: String] = [:]) -> Process {
@@ -421,6 +522,10 @@ if let relayBinary = ProcessInfo.processInfo.environment["KM_RELAY"], ProcessInf
   let second = fakePhone(base, once, mode: "assert", keyFile: keyFile)
   second.waitUntilExit()
   check(second.terminationStatus != 0, "a second answer is refused")
+
+  if let script = ProcessInfo.processInfo.environment["KM_BROWSER_PHONE"], !script.isEmpty {
+    browserTests(script: script, port: port, token: token)
+  }
 } else {
   print("• integration tests skipped (set KM_RELAY and KM_FAKEPHONE, or run ./test.sh)")
 }
