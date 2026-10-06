@@ -168,7 +168,8 @@ cannot extend the grant past its recorded expiry.
 The session file lives in `$TMPDIR` (a per-user directory on macOS, mode 700),
 HMAC-SHA256 signed with a key stored in the keychain. Key and session names are
 hashed before being written, so the file does not reveal which entries have
-been accessed. It does not persist across reboots; expired entries are pruned
+been accessed. The [audit log](#audit-log) does record them in plain text. The
+session file does not persist across reboots; expired entries are pruned
 automatically.
 
 #### Per-key sessions (default)
@@ -249,6 +250,25 @@ The TouchID prompt states what the gesture approves, who asked, and why:
 - **Why**: `--reason <text>` or `KEYMASTER_REASON`. keymaster can't check it,
   so the prompt labels it "Reason given". An environment variable is fine here,
   because a reason can't widen access.
+
+### Audit log
+
+Every access appends one JSON line to `~/Library/Logs/keymaster.log` (mode
+600). That includes reads served from the cache, which never show a prompt:
+
+```json
+{"action":"get","caller":"claude ← tmux","chain":[...],"cwd":"/Users/you/Source/pcrn-mgmt","key":"vault_password","outcome":"cached","pid":4242,"reason":"fix paperless mail","session":"deploy","ts":"2026-10-06T03:44:04Z"}
+```
+
+`outcome` is `approved`, `cached` or `denied`. `chain` lists each caller's pid,
+executable path and display name. Callers' arguments are not logged, because a
+shell's `-c` argument can contain secrets. The log rolls over to
+`keymaster.log.1` at about 1 MB. There is no setting to turn it off or move it,
+because a caller could set that too.
+
+```bash
+tail -f ~/Library/Logs/keymaster.log | jq -c '{ts, outcome, key, caller, reason}'
+```
 
 ## SSH Integration
 
