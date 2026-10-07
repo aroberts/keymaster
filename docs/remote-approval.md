@@ -244,10 +244,27 @@ Go, standard library only. In-memory store, capped at 256 pending requests.
 Requests must expire within 15 minutes. See [relay/README.md](../relay/README.md)
 for endpoints, configuration and a Compose example.
 
-It runs as a container on a host that doesn't depend on the homelab, such as
-an OCI VM. The relay can't run on the infrastructure it is meant to repair:
-approving a fix while the homelab is down must still work. For the same
-reason the image is on GHCR, not the homelab's Gitea registry.
+It runs as one replica on the homelab swarm, behind Traefik:
+
+- The route is internal-only. The phone reaches it over WireGuard.
+- Everything except keymaster's two endpoints goes through Authelia (owner
+  only). That covers the page, its static files, and the phone's request,
+  response and deny calls.
+- A carve-out router passes `POST /api/requests` and
+  `GET /api/requests/<id>/result` without Authelia, and only when the request
+  carries `Authorization: Bearer …`. The relay checks the token itself.
+
+Authelia adds a second gate in front of the capability URL. Someone holding a
+Pushover link can no longer deny or spam a request without also logging in.
+The page refuses to follow redirects, so an expired login shows "reload"
+instead of a false "answered".
+
+The homelab dependency is accepted. If the swarm is down, phone approval is
+down and TouchID still works at the Mac. In practice the uses that need the
+phone also need the homelab. The scheduled agent runs work on the homelab, and
+the #965 CI deploys run on the homelab's Gitea runners. The vault password,
+the key a homelab repair would need, stays off the allowlist. The image is on
+GHCR all the same, so a pull doesn't depend on the Gitea registry.
 
 ## Threat model
 
@@ -302,8 +319,9 @@ easy to change.
 1. **Relay in Go, image on GHCR, tags follow keymaster's `v*` tags.** You
    chose these. The image has `:master` and `:sha-*` tags from master, and
    semver plus `:latest` from release tags.
-2. **Relay host.** Docker on a VM outside the homelab (oci01 in practice). The
-   Cloudflare Worker option is dropped.
+2. **Relay host.** Settled with you: the homelab swarm, internal-only (LAN
+   and WireGuard), with Authelia in front of everything but the two token
+   endpoints. The Cloudflare Worker and oci01 options are dropped.
 3. **The relay sees `R` in plain text** (open decision 2 in the original
    plan). It is self-hosted now, so the URL-fragment trick isn't worth the
    complexity. Pushover sees the key name, host, caller and reason in the
@@ -364,5 +382,8 @@ CoreImage from the imports, so the formula needs no `-framework` flags.
 - **Pushover delivery** and its `url` and `ttl` fields.
 - **The GitHub workflows.** They have never run. Multi-arch builds were only
   checked as a single-arch local build (amd64 and native arm64).
-- **Deployment** on oci01: DNS, TLS, and opening port 443 in the security
-  list and the host firewall. None of it exists yet.
+- **Deployment.** The pcrn-mgmt stack change is written but not deployed. It
+  needs `secret_keymaster_relay_token` in the vault and the image published
+  from master.
+- **The page behind Authelia.** Login redirects, and the redirect refusal
+  for an expired session, are untested.

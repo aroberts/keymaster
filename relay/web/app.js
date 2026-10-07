@@ -115,12 +115,19 @@ function tick() {
   $("expiry").textContent = `Expires in ${left}s`;
 }
 
+// Behind a login proxy, an expired session turns any call into a redirect to
+// the login page. Following it would read as success, so redirects are
+// errors, and reloading the page logs in again.
+const loggedOut = "Your login has expired. Reload the page.";
+
 async function post(path, body) {
   const res = await fetch(api + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
+    redirect: "manual",
   });
+  if (res.type === "opaqueredirect") throw new Error(loggedOut);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || `relay answered ${res.status}`);
@@ -207,7 +214,8 @@ async function deny() {
 async function load() {
   let data;
   try {
-    const res = await fetch(api);
+    const res = await fetch(api, { redirect: "manual" });
+    if (res.type === "opaqueredirect") throw new Error(loggedOut);
     if (!res.ok) throw new Error("This request was not found. It may have expired.");
     data = await res.json();
   } catch (err) {

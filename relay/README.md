@@ -39,8 +39,17 @@ The relay must be reachable from your phone over HTTPS, because WebAuthn only
 runs in a secure context. The passkey is bound to the relay's hostname, so
 pick a hostname you'll keep. Changing it means enrolling again.
 
-Host it somewhere that doesn't depend on the systems you'd use remote
-approval to fix. A small cloud VM is a good fit.
+Run exactly one replica, and stop the old one before starting the new one
+(Swarm: `update_config: {order: stop-first}`). Pending requests live in
+memory, so two replicas would split requests from their answers.
+
+Behind a login proxy (Authelia, oauth2-proxy and the like), put everything
+behind the login except the two endpoints keymaster calls, which can't log
+in: `POST /api/requests` and `GET /api/requests/<id>/result`. Match those
+exactly, require an `Authorization: Bearer` header on them, and let the
+relay check the token. The phone's own calls carry no Authorization header,
+so they stay behind the login. The page treats a redirect as an expired
+login and asks for a reload.
 
 Behind any TLS-terminating reverse proxy, forward everything to port 8080.
 Long-polls hold requests open for 25 seconds, so allow read timeouts of at
