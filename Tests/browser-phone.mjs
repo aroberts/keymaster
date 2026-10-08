@@ -30,9 +30,15 @@ const chrome = spawn(chromePath, [
   "about:blank",
 ], { stdio: "ignore" });
 
+// Chrome may still be writing its profile as it exits, so the removal can
+// race it. Retry, and never fail the run over a leftover temp directory.
 function cleanup() {
   chrome.kill();
-  rmSync(profile, { recursive: true, force: true });
+  try {
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (err) {
+    console.error(`could not remove ${profile}: ${err.code}`);
+  }
 }
 process.on("exit", cleanup);
 
