@@ -15,6 +15,9 @@ func sendPushover(config: RemoteConfig, title: String, message: String, url: URL
     // Pushover deletes the message from the phone once the request expires.
     URLQueryItem(name: "ttl", value: String(max(1, Int(expiry.timeIntervalSinceNow)))),
   ]
+  if let priority = config.pushoverPriority, priority != 0 {
+    components.queryItems?.append(URLQueryItem(name: "priority", value: String(priority)))
+  }
   var request = URLRequest(url: URL(string: "https://api.pushover.net/1/messages.json")!, timeoutInterval: 15)
   request.httpMethod = "POST"
   request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")

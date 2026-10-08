@@ -154,8 +154,10 @@ async function approve() {
           rp: { id: location.hostname, name: "keymaster" },
           user: {
             id: b64urlDecode(request.userId),
-            name: `keymaster ${request.user}@${request.host}`,
-            displayName: request.label || `keymaster on ${request.host}`,
+            // keymaster makes labels unique, so the phone's passkey list
+            // matches `keymaster remote list`.
+            name: request.label,
+            displayName: request.label,
           },
           pubKeyCredParams: [{ type: "public-key", alg: -7 }],
           authenticatorSelection: { residentKey: "required", userVerification: "required" },

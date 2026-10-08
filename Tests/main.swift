@@ -90,6 +90,54 @@ do {
   check(!config.pushoverConfigured, "pushover off without keys")
 }
 
+section("pushover priority in config")
+do {
+  let old = try? JSONDecoder().decode(RemoteConfig.self, from: Data(#"{"relayURL":"https://a.example","relayToken":"t","pushoverToken":"p","pushoverUser":"u"}"#.utf8))
+  check(old != nil && old?.pushoverPriority == nil, "config saved before priority existed still loads")
+  check(old.map(pushoverSummary) == "on, priority 0", "missing priority reads as 0")
+  var config = old!
+  config.pushoverPriority = 1
+  check(pushoverSummary(config) == "on, priority 1", "summary shows the priority")
+  check(pushoverPriorities.contains(-2) && pushoverPriorities.contains(1) && !pushoverPriorities.contains(2), "priority range is -2 to 1")
+}
+
+// MARK: - Passkey labels and history
+
+section("passkey labels")
+do {
+  check(uniqueLabel("phone", taken: []) == "phone", "free label is kept")
+  check(uniqueLabel("phone", taken: ["phone"]) == "phone (2)", "taken label gets (2)")
+  check(uniqueLabel("phone", taken: ["phone", "phone (2)"]) == "phone (3)", "and then (3)")
+  let label = defaultEnrollLabel(taken: [], now: Date(timeIntervalSince1970: 1_800_000_000))
+  check(label.hasPrefix("keymaster on \(localHostName()) 2027-01-1"), "default label has host and date: \(label)")
+}
+
+section("last approval per passkey from the audit log")
+do {
+  let dir = FileManager.default.temporaryDirectory.appendingPathComponent("km-log-\(UUID().uuidString)")
+  try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: dir) }
+  let rotated = dir.appendingPathComponent("keymaster.log.1").path
+  let current = dir.appendingPathComponent("keymaster.log").path
+  try! """
+  {"ts":"2026-10-01T10:00:00Z","approval":"remote","outcome":"approved","credentialId":"A"}
+  {"ts":"2026-10-02T10:00:00Z","approval":"remote","outcome":"approved","credentialId":"B"}
+  """.write(toFile: rotated, atomically: true, encoding: .utf8)
+  try! """
+  {"ts":"2026-10-03T10:00:00Z","approval":"remote","outcome":"approved","credentialId":"A"}
+  {"ts":"2026-10-04T10:00:00Z","approval":"remote","outcome":"denied","credentialId":"B"}
+  {"ts":"2026-10-05T10:00:00Z","approval":"touchid","outcome":"approved"}
+  not json
+  """.write(toFile: current, atomically: true, encoding: .utf8)
+  let history = lastRemoteApprovals(paths: [rotated, current])
+  check(history.byCredential["A"] == "2026-10-03T10:00:00Z", "latest approval wins: \(history.byCredential)")
+  check(history.byCredential["B"] == "2026-10-02T10:00:00Z", "denials don't count")
+  check(history.byCredential.count == 2, "only remote approvals with an id")
+  check(history.since == "2026-10-01T10:00:00Z", "since is the oldest entry")
+  let empty = lastRemoteApprovals(paths: [dir.appendingPathComponent("missing").path])
+  check(empty.byCredential.isEmpty && empty.since == nil, "missing log is empty")
+}
+
 // MARK: - Request encoding
 
 section("request encoding")

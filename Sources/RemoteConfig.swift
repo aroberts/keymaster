@@ -27,6 +27,9 @@ struct RemoteConfig: Codable {
   var relayToken: String
   var pushoverToken: String?
   var pushoverUser: String?
+  // Pushover priority, -2 (silent) to 1 (bypasses quiet hours). nil sends
+  // Pushover's default, 0. Emergency priority 2 is not offered.
+  var pushoverPriority: Int?
 
   var url: URL? { URL(string: relayURL) }
 
@@ -42,6 +45,8 @@ struct RemoteConfig: Codable {
 
   var pushoverConfigured: Bool { pushoverToken != nil && pushoverUser != nil }
 }
+
+let pushoverPriorities = -2...1
 
 func loadJSONItem<T: Decodable>(_ type: T.Type, key: String) -> T? {
   guard let text = getPassword(key: key) else { return nil }

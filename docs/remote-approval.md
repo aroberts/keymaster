@@ -168,6 +168,11 @@ the page show a key fingerprint (the first 8 bytes of SHA-256 of the SPKI)
 to compare. `rpId` is the relay URL's host, and `origin` is its scheme, host
 and port. Both are stored with the credential.
 
+Labels are unique. The default is `keymaster on <host> <YYYY-MM-DD>`, with
+` (2)` and so on for a second enrollment the same day, and `--label` refuses a
+label already in use. The page names the passkey with the label (`user.name`
+and `user.displayName`), so the phone's passkey list matches `remote list`.
+
 The passkey syncs through iCloud Keychain, so the Mac can also approve. That
 is acceptable because UV is still required.
 
@@ -190,6 +195,14 @@ KEYMASTER_REMOTE_TIMEOUT=<seconds>    # default 300, clamped to 30–900
 
 `setup`, `enroll`, `revoke`, `allow` and `disallow` require local TouchID.
 `list` and `test` don't, because they change nothing and release nothing.
+
+`setup` also asks for a Pushover priority from -2 to 1 when Pushover is on.
+Priority 1 bypasses quiet hours. Emergency priority 2 is not offered.
+
+`list` shows each passkey's last remote approval, read from the audit log by
+credential ID. The log keeps about 2 MB across its rotation, so a passkey with
+no approval in it says how far back the log goes. After enrolling the same
+phone twice, the passkey with no recent approval is the one to revoke.
 
 - `local` (default) is today's behaviour.
 - `remote` skips TouchID and goes straight to the phone. It fails at once if
@@ -230,7 +243,7 @@ HMAC key or the relay token without a fresh approval.
 
 | Item | Keychain service | Notes |
 |---|---|---|
-| Relay URL, relay token, Pushover user key and app token | `keymaster_remote_config` | JSON |
+| Relay URL, relay token, Pushover user key, app token and priority | `keymaster_remote_config` | JSON |
 | Enrolled credentials (id, SPKI, alg, rpId, origin, label, created) | `keymaster_remote_credentials` | JSON. rpId and origin are stored per credential, so a config edit can't change what gets verified |
 | Remote allowlist | `keymaster_remote_allowlist` | JSON array |
 
@@ -313,8 +326,8 @@ Nothing in the tests touches the keychain or TouchID.
 
 ## Decisions made without review
 
-These choices were made on 2026-10-06 without a chance to ask. Each is
-easy to change.
+These choices were made on 2026-10-06 without a chance to ask, and reviewed
+on 2026-10-07. Items 12 and 13 changed in review; the rest stand.
 
 1. **Relay in Go, image on GHCR, tags follow keymaster's `v*` tags.** You
    chose these. The image has `:master` and `:sha-*` tags from master, and
@@ -342,10 +355,14 @@ easy to change.
 11. **`auto` falls back on more than the timeout:** also on a locked screen,
     unavailable TouchID, `systemCancel` and `notInteractive`. It does not fall
     back on a user cancel.
-12. **Pushover priority is the default (0)** and the message's `ttl` is the
-    request's expiry. There is no setting for the priority.
+12. **Pushover priority is set in `remote setup`,** from -2 to 1, default 0.
+    Reviewed 2026-10-07: no emergency priority. The message's `ttl` is the
+    request's expiry.
 13. **Each enrollment gets a fresh WebAuthn user handle,** so enrolling twice
-    adds a second passkey and doesn't overwrite the first.
+    adds a second passkey and doesn't overwrite the first. Reviewed
+    2026-10-07: labels are unique and name the passkey on the phone, and
+    `remote list` shows each passkey's last approval, so a stale duplicate
+    can be found and revoked.
 14. **Go code is gofmt-formatted with tabs.** That departs from the two-space
     rule, because gofmt is not configurable and CI checks it.
 

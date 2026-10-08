@@ -7,7 +7,7 @@ import LocalAuthentication
 
 func remoteUsage() {
   printErr("""
-  keymaster remote setup --relay <https-url>   relay URL, relay token and Pushover keys (TouchID)
+  keymaster remote setup --relay <https-url>   relay URL, relay token, Pushover keys and priority (TouchID)
   keymaster remote enroll [--label <name>]     create a passkey on your phone (TouchID)
   keymaster remote list                        show the relay, passkeys and allowlist
   keymaster remote revoke <credential-id|label>  remove a passkey (TouchID)
@@ -97,11 +97,12 @@ func requireLocalTouchID(_ request: RequestContext, reason: String) {
 
 // Read a secret from the terminal without echo, or a line from stdin when
 // there is no terminal. An empty answer returns nil.
-func readSecret(_ prompt: String) -> String? {
+func readSecret(_ prompt: String, echo: Bool = false) -> String? {
   var buffer = [CChar](repeating: 0, count: 1024)
   let value: String?
   if isatty(STDIN_FILENO) != 0 {
-    value = readpassphrase(prompt, &buffer, buffer.count, RPP_REQUIRE_TTY).map { String(cString: $0) }
+    let flags = RPP_REQUIRE_TTY | (echo ? RPP_ECHO_ON : 0)
+    value = readpassphrase(prompt, &buffer, buffer.count, flags).map { String(cString: $0) }
   } else {
     value = readLine()
   }
@@ -117,6 +118,10 @@ func validRelayURL(_ text: String) -> URL? {
   if scheme == "https" { return url }
   if scheme == "http" && (host == "localhost" || host == "127.0.0.1") { return url }
   return nil
+}
+
+func pushoverSummary(_ config: RemoteConfig) -> String {
+  config.pushoverConfigured ? "on, priority \(config.pushoverPriority ?? 0)" : "off"
 }
 
 func remoteSetup(_ args: [String]) {
@@ -142,12 +147,32 @@ func remoteSetup(_ args: [String]) {
   }
   let pushoverUser = readSecret("Pushover user key\(existing == nil ? " (empty skips Pushover)" : keep): ") ?? existing?.pushoverUser
   let pushoverToken = pushoverUser == nil ? nil : (readSecret("Pushover app token\(keep): ") ?? existing?.pushoverToken)
-  let config = RemoteConfig(relayURL: trimmedURL, relayToken: token, pushoverToken: pushoverToken, pushoverUser: pushoverUser)
+  var pushoverPriority: Int?
+  if pushoverUser != nil {
+    let current = existing?.pushoverPriority ?? 0
+    let range = "\(pushoverPriorities.lowerBound) to \(pushoverPriorities.upperBound)"
+    if let answer = readSecret("Pushover priority, \(range) (empty keeps \(current)): ", echo: true) {
+      guard let priority = Int(answer), pushoverPriorities.contains(priority) else {
+        printErr("Pushover priority must be a whole number from \(range)")
+        exit(EXIT_FAILURE)
+      }
+      pushoverPriority = priority
+    } else {
+      pushoverPriority = current
+    }
+  }
+  let config = RemoteConfig(
+    relayURL: trimmedURL,
+    relayToken: token,
+    pushoverToken: pushoverToken,
+    pushoverUser: pushoverUser,
+    pushoverPriority: pushoverPriority
+  )
   guard storeJSONItem(config, key: remoteConfigItem) else {
     printErr("Could not store the remote approval settings")
     exit(EXIT_FAILURE)
   }
-  printErr("Saved. Relay \(trimmedURL), Pushover \(config.pushoverConfigured ? "on" : "off").")
+  printErr("Saved. Relay \(trimmedURL), Pushover \(pushoverSummary(config)).")
   let stale = loadCredentials().filter { $0.origin != config.origin }
   if !stale.isEmpty {
     printErr("Warning: \(stale.count) enrolled passkey(s) belong to another origin and won't work with this relay:")
@@ -155,13 +180,39 @@ func remoteSetup(_ args: [String]) {
   }
 }
 
+// The label is also the passkey's name on the phone, so it must tell
+// passkeys apart in both places, even when one phone is enrolled twice.
+func uniqueLabel(_ base: String, taken: Set<String>) -> String {
+  guard taken.contains(base) else { return base }
+  var n = 2
+  while taken.contains("\(base) (\(n))") { n += 1 }
+  return "\(base) (\(n))"
+}
+
+func defaultEnrollLabel(taken: Set<String>, now: Date = Date()) -> String {
+  let formatter = DateFormatter()
+  formatter.locale = Locale(identifier: "en_US_POSIX")
+  formatter.dateFormat = "yyyy-MM-dd"
+  return uniqueLabel("keymaster on \(localHostName()) \(formatter.string(from: now))", taken: taken)
+}
+
 func remoteEnroll(_ args: [String]) {
   var args = args
-  let label = takeOption("--label", from: &args) ?? "keymaster on \(localHostName())"
+  let given = takeOption("--label", from: &args)
   guard args.isEmpty else {
     printErr("Usage: keymaster remote enroll [--label <name>]")
     exit(EXIT_FAILURE)
   }
+  let taken = Set(loadCredentials().map(\.label))
+  if let given = given, given.trimmingCharacters(in: .whitespaces).isEmpty {
+    printErr("A passkey label can't be empty")
+    exit(EXIT_FAILURE)
+  }
+  if let given = given, taken.contains(given) {
+    printErr("A passkey is already labeled \"\(given)\". Pick another label, or revoke that passkey first.")
+    exit(EXIT_FAILURE)
+  }
+  let label = given ?? defaultEnrollLabel(taken: taken)
   guard let config = loadRemoteConfig(), let rpId = config.rpId, let origin = config.origin else {
     printErr("Run keymaster remote setup first")
     exit(EXIT_FAILURE)
@@ -207,16 +258,24 @@ func remoteList() {
   let config = loadRemoteConfig()
   print("Relay:    \(config?.relayURL ?? "not set up")")
   if let config = config {
-    print("Pushover: \(config.pushoverConfigured ? "on" : "off")")
+    print("Pushover: \(pushoverSummary(config))")
   }
   let credentials = loadCredentials()
   print("\nPasskeys (\(credentials.count)):")
   let formatter = ISO8601DateFormatter()
+  let history = lastRemoteApprovals()
   for credential in credentials {
     let created = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(credential.created)))
     print("  \(credential.label)")
     print("    id \(credential.id)")
     print("    fingerprint \(credential.fingerprint), \(credential.origin), enrolled \(created)")
+    if let last = history.byCredential[credential.id] {
+      print("    last approval \(last)")
+    } else if let since = history.since {
+      print("    no approval in the audit log, which goes back to \(since)")
+    } else {
+      print("    no approval in the audit log, which is empty")
+    }
   }
   let allowlist = loadAllowlist()
   print("\nRemote allowlist (\(allowlist.count)):")
@@ -313,7 +372,7 @@ func remoteTest() {
   case .responded(let response):
     do {
       let credential = try verifyAssertion(response, for: remote, credentials: setup.credentials)
-      auditLog(request, outcome: "approved", extra: ["approval": "remote", "credential": credential.label])
+      auditLog(request, outcome: "approved", extra: ["approval": "remote", "credential": credential.label, "credentialId": credential.id])
       printErr("Verified an approval from \"\(credential.label)\". Remote approval works.")
     } catch {
       auditLog(request, outcome: "denied", error: "assertion rejected: \(error)", extra: ["approval": "remote"])

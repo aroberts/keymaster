@@ -74,3 +74,25 @@ func openAuditLog() -> Int32? {
   }
   return nil
 }
+
+// When each passkey last approved a request, by credential ID, read from the
+// audit log and its rotated copy. `since` is the oldest entry read: rotation
+// drops older history, so a passkey missing here may have been used before it.
+func lastRemoteApprovals(paths: [String] = [auditLogPath + ".1", auditLogPath]) -> (byCredential: [String: String], since: String?) {
+  var byCredential: [String: String] = [:]
+  var since: String?
+  for path in paths {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+    for line in text.split(separator: "\n") {
+      guard let record = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+            let ts = record["ts"] as? String else { continue }
+      // ISO 8601 UTC timestamps compare correctly as strings.
+      if since == nil || ts < since! { since = ts }
+      guard record["approval"] as? String == "remote",
+            record["outcome"] as? String == "approved",
+            let id = record["credentialId"] as? String else { continue }
+      if byCredential[id].map({ ts > $0 }) ?? true { byCredential[id] = ts }
+    }
+  }
+  return (byCredential, since)
+}

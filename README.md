@@ -273,7 +273,7 @@ Every access appends one JSON line to `~/Library/Logs/keymaster.log` (mode
 
 `outcome` is `approved`, `cached` or `denied` (`enrolled` for a new passkey).
 `approval` says whether TouchID (`touchid`) or the phone (`remote`) decided, and
-a remote approval also names the passkey in `credential`. `chain` lists each caller's pid,
+a remote approval also names the passkey in `credential` and `credentialId`. `chain` lists each caller's pid,
 executable path and display name. Callers' arguments are not logged, because a
 shell's `-c` argument can contain secrets. The log rolls over to
 `keymaster.log.1` at about 1 MB. There is no setting to turn it off or move it,
@@ -303,7 +303,7 @@ of them can be approved from the phone.
 
 ```bash
 # 1. Point keymaster at your relay. Prompts for the relay token and,
-#    optionally, a Pushover user key and app token for notifications.
+#    optionally, a Pushover user key, app token and priority (-2 to 1).
 keymaster remote setup --relay https://approve.example.com
 
 # 2. Create a passkey on your phone. Scan the QR code it prints (or tap the
@@ -319,7 +319,9 @@ keymaster remote test
 ```
 
 `keymaster remote list` shows the relay, the enrolled passkeys and the
-allowlist. `revoke` and `disallow` undo `enroll` and `allow`.
+allowlist. `revoke` and `disallow` undo `enroll` and `allow`. Each passkey's
+label is also its name on the phone, and `list` shows when it last approved
+a request. After enrolling the same phone twice, revoke the one that hasn't.
 
 ### Approval modes
 

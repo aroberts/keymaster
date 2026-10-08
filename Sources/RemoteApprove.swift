@@ -139,7 +139,7 @@ func approveRemotelyAndExit(_ request: RequestContext, setup: RemoteSetup, secre
     do {
       let credential = try verifyAssertion(response, for: remote, credentials: setup.credentials)
       debug("Assertion verified with \(credential.label) (\(credential.id))")
-      auditLog(request, outcome: "approved", extra: ["approval": "remote", "credential": credential.label])
+      auditLog(request, outcome: "approved", extra: ["approval": "remote", "credential": credential.label, "credentialId": credential.id])
       if request.action == "get" {
         updateSession(for: request.key, sessionName: request.sessionName, scope: request.scope)
       }
