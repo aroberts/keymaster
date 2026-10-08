@@ -330,8 +330,7 @@ easy to change.
 5. **Remote approvals get the same session TTL** (open decision 4). The phone
    page shows the TTL.
 6. **Plain `swiftc` over `Sources/*.swift`, not SwiftPM** (open decision 5).
-   The Homebrew formula must change before the next release. See
-   [Homebrew formula](#homebrew-formula).
+   See [Homebrew formula](#homebrew-formula).
 7. **Remote approval only releases `get`.** The original plan carried
    `set`/`delete` in `R`. Writes from a phone seemed riskier than they are
    useful.
@@ -352,14 +351,10 @@ easy to change.
 
 ## Homebrew formula
 
-The formula in `aroberts/homebrew-tap` still compiles `keymaster.swift`, which
-no longer exists. The release workflow only rewrites the formula's `url` and
-`sha256`. So the install line has to change by hand before or with the next
-release, or `brew install` will fail:
-
-```ruby
-system "swiftc", *Dir["Sources/*.swift"], "-o", "keymaster", "-O"
-```
+The formula in `aroberts/homebrew-tap` compiles `Sources/*.swift`. It falls
+back to `keymaster.swift` when `Sources/` is missing, so the v0.8.0 tarball
+still builds. The release workflow only rewrites the formula's `url` and
+`sha256`. Drop the fallback once a release with `Sources/` is out.
 
 Swift links LocalAuthentication, Security, CryptoKit, CoreGraphics and
 CoreImage from the imports, so the formula needs no `-framework` flags.
