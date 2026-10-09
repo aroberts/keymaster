@@ -376,26 +376,29 @@ still builds. The release workflow only rewrites the formula's `url` and
 Swift links LocalAuthentication, Security, CryptoKit, CoreGraphics and
 CoreImage from the imports, so the formula needs no `-framework` flags.
 
-## Not yet verified
+## Verification
 
-- **A real iPhone.**
-  - The page has only run in headless Chrome with a virtual authenticator.
-  - Safari on iOS needs `getPublicKey()` and `getAuthenticatorData()` (iOS 16
-    and later).
-  - The page needs to keep user activation through the click handler.
-- **Real TouchID, and the keychain items.** The tests skip both, because a
-  keychain read from an unsigned rebuild opens a GUI dialog.
-  - Not exercised: `remote setup`, `enroll`, `allow` and their TouchID
-    prompts.
-  - Not exercised: `--approve auto` with its timeout and `invalidate()`.
-- **Screen-lock detection while actually locked.** Under tmux the session
-  dictionary is readable. `CGSSessionScreenIsLocked` was absent while
-  unlocked, which is expected.
-- **Pushover delivery** and its `url` and `ttl` fields.
-- **The GitHub workflows.** They have never run. Multi-arch builds were only
-  checked as a single-arch local build (amd64 and native arm64).
-- **Deployment.** The pcrn-mgmt stack change is written but not deployed. It
-  needs `secret_keymaster_relay_token` in the vault and the image published
-  from master.
-- **The page behind Authelia.** Login redirects, and the redirect refusal
-  for an expired session, are untested.
+Verified on 2026-10-08 with the relay on the swarm (`sha-d39f6e6`) and the
+Homebrew HEAD build:
+
+- enrollment and approval from Safari on a real iPhone, with Face ID;
+- `remote setup`, `enroll`, `allow`, `disallow`, `revoke` and `test`, with
+  their TouchID prompts;
+- `--approve remote`: approve, deny on the phone, expiry, refusal of a key
+  off the allowlist, and the session cache after a remote approval;
+- `--approve auto`: fallback to the phone on the TouchID timeout, on a locked
+  screen and over ssh, and no fallback on Cancel;
+- Pushover delivery and its link. Pushover opens links in its in-app browser
+  by default. Its setting to open links in Safari keeps the Pushover message
+  from lingering behind the page.
+- the GitHub workflows, and the multi-arch image on GHCR;
+- the Authelia login in front of the page, and the token carve-out (a
+  request with a wrong bearer token reaches the relay and gets a 401).
+
+Still unverified:
+
+- Pushover removing the message from the phone when the request expires
+  (`ttl`).
+- The page's handling of an Authelia session that expires while the page is
+  open. The page's `fetch` should refuse the redirect and say "Your login has
+  expired. Reload the page."
