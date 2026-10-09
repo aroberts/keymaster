@@ -368,10 +368,9 @@ on 2026-10-07. Items 12 and 13 changed in review; the rest stand.
 
 ## Homebrew formula
 
-The formula in `aroberts/homebrew-tap` compiles `Sources/*.swift`. It falls
-back to `keymaster.swift` when `Sources/` is missing, so the v0.8.0 tarball
-still builds. The release workflow only rewrites the formula's `url` and
-`sha256`. Drop the fallback once a release with `Sources/` is out.
+The formula in `aroberts/homebrew-tap` compiles `Sources/*.swift`, as of
+v0.9.0. The release workflow only rewrites the formula's `url` and `sha256`,
+so a change to the build line still has to be made in the tap by hand.
 
 Swift links LocalAuthentication, Security, CryptoKit, CoreGraphics and
 CoreImage from the imports, so the formula needs no `-framework` flags.
