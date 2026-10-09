@@ -47,63 +47,47 @@ swiftc -O -o keymaster Sources/*.swift
 ### Code signing (recommended, one-time setup)
 
 Both `build.sh` (local builds) and `keymaster-resign` (after a Homebrew
-upgrade) sign with a self-signed code-signing identity named `keymaster-signing`.
-This matters because macOS records a binary's Keychain trust (the "Always Allow"
-below) against its code signature. An unsigned binary is trusted by its
-`cdhash`, which changes on every recompile — so each rebuild breaks the trust
-and you get Keychain and TouchID prompts all over again. Signing with a stable
-identity makes the trust survive rebuilds.
+upgrade) sign with your Apple Development identity. This matters because macOS
+records a binary's Keychain trust (the "Always Allow" below) against its code
+signature, and keychain items also carry a partition list keyed on the signer's
+Team ID. Code without a Team ID is partitioned by its `cdhash`, which changes
+on every recompile, so each rebuild sends you back through the Keychain
+password prompts. An Apple Development identity carries your Team ID, so the
+trust survives rebuilds.
 
-If the `keymaster-signing` identity is not present, `build.sh` still builds, but
-unsigned, and prints a warning — expect a prompt on every build until you
-create it.
+A self-signed certificate does not work. `codesign` only takes a Team ID from
+an Apple-issued certificate, so a self-signed binary is still partitioned by
+`cdhash`.
 
-Create the identity once. The GUI path is Keychain Access → Certificate
-Assistant → Create a Certificate… (Name: `keymaster-signing`, Identity Type:
-Self Signed Root, Certificate Type: Code Signing). If Certificate Assistant
-errors out (it can on migrated systems with a stale keychain search list),
-create it from the command line instead:
+Get the identity once from Xcode: Settings → Accounts, add your Apple ID (a
+free account's Personal Team is enough), then Manage Certificates → + → Apple
+Development. Check that it is present:
 
 ```bash
-# Generate a self-signed code-signing cert
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout /tmp/keymaster-signing.key -out /tmp/keymaster-signing.crt \
-  -days 3650 -subj "/CN=keymaster-signing" \
-  -addext "basicConstraints=critical,CA:false" \
-  -addext "keyUsage=critical,digitalSignature" \
-  -addext "extendedKeyUsage=critical,codeSigning"
-
-# Bundle and import into the login keychain, authorizing codesign to use the key
-openssl pkcs12 -export -inkey /tmp/keymaster-signing.key \
-  -in /tmp/keymaster-signing.crt -name keymaster-signing \
-  -out /tmp/keymaster-signing.p12 -passout pass:temp
-security import /tmp/keymaster-signing.p12 \
-  -k ~/Library/Keychains/login.keychain-db -P temp -T /usr/bin/codesign
-
-# Shred the temporary key material — the private key now lives in the keychain
-rm -f /tmp/keymaster-signing.key /tmp/keymaster-signing.crt /tmp/keymaster-signing.p12
+security find-identity -v -p codesigning
 ```
 
-The identity shows as untrusted (`CSSMERR_TP_NOT_TRUSTED`) in
-`security find-identity -p codesigning`. That is expected for a self-signed
-cert and does not prevent signing.
+Both scripts use the first valid `Apple Development:` identity. Set
+`KEYMASTER_SIGNING_IDENTITY` to a name or SHA-1 hash to pick another. If none
+is present, `build.sh` still builds, but unsigned, and prints a warning. Expect
+a prompt on every build until you add one.
 
 ### Re-signing after a Homebrew upgrade
 
 If you install via Homebrew, each `brew upgrade` recompiles keymaster from
 source and re-applies an ad-hoc signature. Homebrew's build runs with an
 isolated `HOME` and sandbox and cannot reach your login keychain, so it cannot
-sign with `keymaster-signing` itself. After an upgrade that rebuilt keymaster,
+sign with your identity itself. After an upgrade that rebuilt keymaster,
 re-sign it once:
 
 ```bash
 keymaster-resign
 ```
 
-This signs the installed `keymaster` binary with the `keymaster-signing`
+This signs the installed `keymaster` binary with your Apple Development
 identity (override via `KEYMASTER_SIGNING_IDENTITY`), restoring the stable
-designated requirement so the Keychain "Always Allow" trust holds across the
-upgrade. It is harmless to run when the binary is already signed.
+designated requirement and Team ID so the Keychain "Always Allow" trust holds
+across the upgrade. It is harmless to run when the binary is already signed.
 
 ## Usage
 
@@ -151,7 +135,7 @@ they are a one-time cost. An unsigned (ad-hoc) binary is trusted by its cdhash
 and is re-prompted on every rebuild — including each `brew upgrade`, which
 recompiles from source; run
 [`keymaster-resign`](#re-signing-after-a-homebrew-upgrade) afterward to restore
-the trust. The first switch from unsigned to signed also triggers one fresh
+the trust. The first switch to a new signing identity also triggers one fresh
 round of prompts, after which it sticks.
 
 To change a secret, delete and re-set it, or edit it directly in

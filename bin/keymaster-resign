@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# keymaster-resign: Re-sign the keymaster binary with a stable self-signed
-# code-signing identity so the macOS Keychain "Always Allow" trust survives a
-# rebuild. `brew upgrade keymaster` recompiles from source and produces a fresh
-# ad-hoc signature (cdhash-based, changes every build), which invalidates the
-# Keychain ACL and re-triggers the prompts. Run this once after such a rebuild.
+# keymaster-resign: Re-sign the keymaster binary with an Apple Development
+# identity so the macOS Keychain "Always Allow" trust survives a rebuild.
+# `brew upgrade keymaster` recompiles from source and produces a fresh ad-hoc
+# signature (cdhash-based, changes every build), which invalidates the Keychain
+# ACL and re-triggers the prompts. Run this once after such a rebuild.
 #
-# See the "Code signing" section of the README for one-time identity setup.
+# The identity needs a Team ID. Keychain items also check a partition list, and
+# code without a Team ID is partitioned by its cdhash, so a self-signed cert
+# still re-prompts after every rebuild. See the "Code signing" section of the
+# README.
 
-IDENTITY="${KEYMASTER_SIGNING_IDENTITY:-keymaster-signing}"
+# $KEYMASTER_SIGNING_IDENTITY if set, else the first valid Apple Development
+# identity, matched by SHA-1 so a renewed cert sitting next to the old one
+# isn't ambiguous.
+if [[ -n "${KEYMASTER_SIGNING_IDENTITY:-}" ]]; then
+  IDENTITY="$KEYMASTER_SIGNING_IDENTITY"
+else
+  IDENTITY="$(/usr/bin/security find-identity -v -p codesigning \
+    | awk '/"Apple Development: /{print $2; exit}')"
+fi
 
 # Resolve keymaster binary: check relative to this script first, then PATH.
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,12 +47,12 @@ while [[ -L "$target" ]]; do
   fi
 done
 
-if ! /usr/bin/security find-identity -p codesigning 2>/dev/null | grep -qF "\"$IDENTITY\""; then
+if [[ -z "$IDENTITY" ]]; then
   cat >&2 <<EOF
-keymaster-resign: code-signing identity '$IDENTITY' not found.
+keymaster-resign: no Apple Development code-signing identity found.
 
-Create it once (see the "Code signing" section of the keymaster README), or set
-KEYMASTER_SIGNING_IDENTITY to the name of an existing code-signing identity.
+Get one from Xcode (see the "Code signing" section of the keymaster README), or
+set KEYMASTER_SIGNING_IDENTITY to an existing identity that has a Team ID.
 EOF
   exit 1
 fi
