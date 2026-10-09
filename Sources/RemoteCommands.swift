@@ -300,7 +300,7 @@ func remoteRevoke(_ args: [String]) {
     printErr("Could not store the passkey list")
     exit(EXIT_FAILURE)
   }
-  printErr("Revoked \"\(credential.label)\". Delete the passkey on the phone too (Settings > Passwords).")
+  printErr("Revoked \"\(credential.label)\". Delete the passkey on the phone too: Passwords app, \"\(credential.rpId)\".")
 }
 
 func remoteAllow(_ args: [String], add: Bool) {
