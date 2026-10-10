@@ -103,6 +103,20 @@ function showFinal(status) {
   else if (status === "denied") setStatus("Denied.", "error");
 }
 
+// After an answer, close the tab so busy days don't pile them up on the
+// phone. Safari closes only a tab whose history holds this page alone, and a
+// trip through a login page adds one. When the close is refused, the page
+// stays up and says so. Enrollment never closes: the fingerprint it shows
+// has to be checked against keymaster's.
+function closeSoon() {
+  setTimeout(() => {
+    window.close();
+    setTimeout(() => {
+      $("status").textContent += " You can close this tab.";
+    }, 500);
+  }, 1500);
+}
+
 function tick() {
   const left = Math.round(request.exp - Date.now() / 1000);
   if (left <= 0) {
@@ -194,6 +208,7 @@ async function approve() {
         signature: b64urlEncode(r.signature),
       });
       showFinal("responded");
+      closeSoon();
     }
   } catch (err) {
     busy(false);
@@ -207,6 +222,7 @@ async function deny() {
   try {
     await post("/deny");
     showFinal("denied");
+    closeSoon();
   } catch (err) {
     busy(false);
     setStatus(err.message, "error");

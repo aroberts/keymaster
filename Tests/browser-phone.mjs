@@ -93,6 +93,10 @@ async function waitFor(expression, timeout = 10000) {
 
 await send("Page.enable");
 await send("Runtime.enable");
+// Record the page's close instead of closing the one tab every line shares.
+await send("Page.addScriptToEvaluateOnNewDocument", {
+  source: "window.close = () => { window.closeRequested = true; };",
+});
 await send("WebAuthn.enable", { enableUI: false });
 await send("WebAuthn.addVirtualAuthenticator", {
   options: {
@@ -108,6 +112,7 @@ await send("WebAuthn.addVirtualAuthenticator", {
 const pageState = `JSON.stringify({
   title: document.getElementById("title").textContent,
   status: document.getElementById("status").textContent,
+  closeRequested: window.closeRequested === true,
   fields: Object.fromEntries(Array.from(document.querySelectorAll("dt"), (dt) => [dt.textContent, dt.nextElementSibling.textContent])),
 })`;
 
@@ -126,6 +131,10 @@ for await (const line of rl) {
   const button = action === "deny" ? "deny" : "approve";
   await evaluate(`document.getElementById("${button}").click()`, true);
   await waitFor(`document.getElementById("status").textContent !== ""`);
+  // A page that closes asks within two seconds, then reports the refusal.
+  if (await waitFor("window.closeRequested === true", 2500)) {
+    await waitFor(`document.getElementById("status").textContent.endsWith("You can close this tab.")`, 2000);
+  }
   console.log(await evaluate(pageState));
 }
 process.exit(0);

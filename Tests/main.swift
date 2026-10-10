@@ -414,6 +414,7 @@ func browserTests(script: String, port: Int, token: String) {
   let fields = enrollPage["fields"] as? [String: String] ?? [:]
   check(fields["Key fingerprint"] == credential?.fingerprint, "page and keymaster show the same fingerprint")
   check(fields["Request code"] == enroll.code, "page shows keymaster's request code")
+  check(enrollPage["closeRequested"] as? Bool == false, "enrollment page stays open")
   let credentials = credential.map { [$0] } ?? []
 
   let context = RequestContext(
@@ -439,6 +440,7 @@ func browserTests(script: String, port: Int, token: String) {
   check(approveFields["Reason given by the caller"] == "<img src=x onerror=alert(1)>", "reason is rendered as text")
   check(approveFields["Also allows"]?.contains("“svc/”") == true, "page shows the scope")
   check(approveFields["Request code"] == approve.code, "page shows keymaster's request code")
+  check(approvePage["closeRequested"] as? Bool == true, "page closes itself after approving")
 
   let deny = makeApprovalRequest(for: context, lifetime: 60)
   try? client.create(deny)
@@ -448,7 +450,9 @@ func browserTests(script: String, port: Int, token: String) {
   } else {
     check(false, "deny on the page was not reported as denied")
   }
-  check(phone.readResult()["status"] as? String == "Denied.", "page shows the deny")
+  let denyPage = phone.readResult()
+  check(denyPage["closeRequested"] as? Bool == true, "page closes itself after denying")
+  check(denyPage["status"] as? String == "Denied. You can close this tab.", "page shows the deny, then that the close was refused")
 }
 
 // MARK: - Integration with a real relay and the Go fake phone

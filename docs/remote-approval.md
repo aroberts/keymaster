@@ -115,6 +115,15 @@ keymaster exits non-zero at once. A deny needs no signature, because a forged
 deny can only cause a denial of service. The relay accepts only the first
 answer.
 
+After an approve or a deny, the page shows the result for 1.5 seconds and
+then calls `window.close()`, so answered tabs don't pile up on the phone.
+Browsers close only a tab whose history holds the page alone, and a trip
+through the login proxy's sign-in page adds one entry. When the close is
+refused, the page stays up and says the tab can be closed. The tab is not a
+record: keymaster's audit log is. Closing it also takes the key name, host
+and reason off the phone's screen. Enrollment pages stay open, because their
+fingerprint has to be compared with the one keymaster prints.
+
 ### Verification (in keymaster)
 
 `verifyAssertion` in `Sources/RemoteVerify.swift`. Every check must pass:
@@ -401,3 +410,5 @@ Still unverified:
 - The page's handling of an Authelia session that expires while the page is
   open. The page's `fetch` should refuse the redirect and say "Your login has
   expired. Reload the page."
+- Safari closing the tab after an answer. A tab that went through the Authelia
+  sign-in should stay open and say it can be closed.
