@@ -228,11 +228,18 @@ trade for cross-process sharing.
 
 ### What the prompt shows
 
-The TouchID prompt states what the gesture approves, who asked, and why:
+The TouchID prompt states what the gesture approves, who asked, and why, one
+paragraph each:
 
-> Authenticate to read "vault_password" in session "deploy". Requested by
-> ansible-vault-keymaster ← ansible-playbook ← secret ← … ← tmux in
-> ~/Source/pcrn-mgmt. Reason given: "fix paperless mail"
+```
+read "vault_password" in session "deploy"
+
+Requested by: ansible-vault-keymaster ← ansible-playbook ← secret ← … ← tmux
+
+In: ~/Source/pcrn-mgmt
+
+Reason given: "fix paperless mail"
+```
 
 - **What**: the action, the key, the session, and any `--scope` prefix with its
   TTL.
@@ -245,6 +252,9 @@ The TouchID prompt states what the gesture approves, who asked, and why:
 - **Why**: `--reason <text>` or `KEYMASTER_REASON`. keymaster can't check it,
   so the prompt labels it "Reason given". An environment variable is fine here,
   because a reason can't widen access.
+
+Only keymaster adds line breaks. Every caller-supplied value has them
+stripped, so a caller can't start a line that reads as keymaster's.
 
 ### Audit log
 

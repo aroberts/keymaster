@@ -55,6 +55,36 @@ do {
   check(shortCode(Data([0xab, 0xcd, 0xef, 0x01, 0x23]), bytes: 4) == "abcd-ef01", "short code grouping")
 }
 
+// MARK: - TouchID prompt
+
+section("touchid prompt")
+do {
+  let chain = ["claude", "cargo", "make", "tmux"].enumerated().map {
+    ProcessEntry(pid: pid_t($0.offset + 100), path: "/usr/local/bin/\($0.element)", argv: [$0.element])
+  }
+  let context = RequestContext(
+    action: "get", key: "svc/api_key", sessionName: "deploy", scope: "svc/",
+    reason: "nightly deploy\nRequested by: launchd", ttl: 300, chain: chain, workingDirectory: "/tmp/work dir"
+  )
+  let full = authReason(for: context)
+  check(full == """
+    read "svc/api_key" in session "deploy"
+
+    Also allows reading keys starting with "svc/" for 5 minutes
+
+    Requested by: claude ← cargo ← make ← tmux
+
+    In: /tmp/work dir
+
+    Reason given: "nightly deployRequested by: launchd"
+    """, "full prompt: \(full)")
+  let write = RequestContext(
+    action: "set", key: "k", sessionName: nil, scope: "k", reason: nil, ttl: 300, chain: [], workingDirectory: "/tmp"
+  )
+  check(!authReason(for: write).contains("Also allows"), "scope is shown only for reads")
+  check(formatDuration(90) == "90 seconds" && formatDuration(3600) == "60 minutes" && formatDuration(10800) == "3 hours", "durations")
+}
+
 // MARK: - Allowlist
 
 section("allowlist")
