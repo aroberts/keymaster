@@ -296,12 +296,13 @@ Every step that changes what the phone can approve needs local TouchID. None
 of them can be approved from the phone.
 
 ```bash
-# 1. Point keymaster at your relay. Prompts for the relay token and,
-#    optionally, a Pushover user key, app token and priority (-2 to 1).
+# 1. Point keymaster at your relay. Prompts for the relay token, then for
+#    notifications: Pushover (user key, app token, priority -2 to 1), ntfy
+#    (server, topic, access token, priority 1 to 5), both or none.
 keymaster remote setup --relay https://approve.example.com
 
 # 2. Create a passkey on your phone. Scan the QR code it prints (or tap the
-#    Pushover notification) and confirm the fingerprint matches.
+#    notification) and confirm the fingerprint matches.
 keymaster remote enroll --label "iPhone"
 
 # 3. Choose which keys the phone may approve. The list starts empty.

@@ -99,10 +99,18 @@ func askPhone(_ remote: RemoteRequest, config: RemoteConfig, title: String, mess
     if sendPushover(config: config, title: title, message: message, url: page, expiry: remote.expiry) {
       debug("Pushover notification sent")
     }
-  } else {
-    debug("Pushover not configured; open the link yourself")
   }
-  switch relay.waitForResult(remote) {
+  var ntfySent = false
+  if config.ntfyConfigured {
+    ntfySent = sendNtfy(config: config, requestId: remote.id, title: title, message: message, url: page)
+    if ntfySent { debug("ntfy notification sent") }
+  }
+  if !config.pushoverConfigured && !config.ntfyConfigured {
+    debug("No notifications configured; open the link yourself")
+  }
+  let result = relay.waitForResult(remote)
+  if ntfySent { deleteNtfy(config: config, requestId: remote.id) }
+  switch result {
   case .responded(let response): return .responded(response)
   case .denied: return .denied
   case .expired, .pending: return .expired

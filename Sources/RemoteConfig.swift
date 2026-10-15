@@ -30,6 +30,13 @@ struct RemoteConfig: Codable {
   // Pushover priority, -2 (silent) to 1 (bypasses quiet hours). nil sends
   // Pushover's default, 0. Emergency priority 2 is not offered.
   var pushoverPriority: Int?
+  // ntfy: a server's base URL and a topic, plus an access token when the
+  // topic needs one. Priority runs from 1 (min) to 5 (max); nil sends ntfy's
+  // default, 3.
+  var ntfyServer: String?
+  var ntfyTopic: String?
+  var ntfyToken: String?
+  var ntfyPriority: Int?
 
   var url: URL? { URL(string: relayURL) }
 
@@ -44,9 +51,16 @@ struct RemoteConfig: Codable {
   }
 
   var pushoverConfigured: Bool { pushoverToken != nil && pushoverUser != nil }
+  var ntfyConfigured: Bool { ntfyServer != nil && ntfyTopic != nil }
 }
 
 let pushoverPriorities = -2...1
+let ntfyPriorities = 1...5
+
+// ntfy's own rule for topic names, which it also applies to sequence IDs.
+func validNtfyTopic(_ topic: String) -> Bool {
+  topic.range(of: "^[-_A-Za-z0-9]{1,64}$", options: .regularExpression) != nil
+}
 
 func loadJSONItem<T: Decodable>(_ type: T.Type, key: String) -> T? {
   guard let text = getPassword(key: key) else { return nil }

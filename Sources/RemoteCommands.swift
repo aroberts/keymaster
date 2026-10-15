@@ -7,7 +7,7 @@ import LocalAuthentication
 
 func remoteUsage() {
   printErr("""
-  keymaster remote setup --relay <https-url>   relay URL, relay token, Pushover keys and priority (TouchID)
+  keymaster remote setup --relay <https-url>   relay URL and token, Pushover or ntfy settings (TouchID)
   keymaster remote enroll [--label <name>]     create a passkey on your phone (TouchID)
   keymaster remote list                        show the relay, passkeys and allowlist
   keymaster remote revoke <credential-id|label>  remove a passkey (TouchID)
@@ -124,6 +124,86 @@ func pushoverSummary(_ config: RemoteConfig) -> String {
   config.pushoverConfigured ? "on, priority \(config.pushoverPriority ?? 0)" : "off"
 }
 
+func ntfySummary(_ config: RemoteConfig) -> String {
+  guard config.ntfyConfigured, let server = config.ntfyServer else { return "off" }
+  return "on, \(server), priority \(config.ntfyPriority ?? 3)"
+}
+
+// Which services ring the phone, from the answer to setup's first question.
+func parseNotifiers(_ text: String) -> (pushover: Bool, ntfy: Bool)? {
+  switch text.lowercased() {
+  case "pushover": return (true, false)
+  case "ntfy": return (false, true)
+  case "both": return (true, true)
+  case "none": return (false, false)
+  default: return nil
+  }
+}
+
+func notifierName(pushover: Bool, ntfy: Bool) -> String {
+  switch (pushover, ntfy) {
+  case (true, true): return "both"
+  case (true, false): return "pushover"
+  case (false, true): return "ntfy"
+  case (false, false): return "none"
+  }
+}
+
+func askPriority(_ service: String, range: ClosedRange<Int>, current: Int) -> Int {
+  let bounds = "\(range.lowerBound) to \(range.upperBound)"
+  guard let answer = readSecret("\(service) priority, \(bounds) (empty keeps \(current)): ", echo: true) else { return current }
+  guard let priority = Int(answer), range.contains(priority) else {
+    printErr("\(service) priority must be a whole number from \(bounds)")
+    exit(EXIT_FAILURE)
+  }
+  return priority
+}
+
+// A required value: empty keeps the current one, if there is one.
+func askRequired(_ label: String, current: String?, echo: Bool = false) -> String {
+  let hint = current == nil ? "" : " (empty keeps the current value)"
+  guard let value = readSecret("\(label)\(hint): ", echo: echo) ?? current else {
+    printErr("\(label) is required")
+    exit(EXIT_FAILURE)
+  }
+  return value
+}
+
+func askPushover(into config: inout RemoteConfig, existing: RemoteConfig?) {
+  config.pushoverUser = askRequired("Pushover user key", current: existing?.pushoverUser)
+  config.pushoverToken = askRequired("Pushover app token", current: existing?.pushoverToken)
+  config.pushoverPriority = askPriority("Pushover", range: pushoverPriorities, current: existing?.pushoverPriority ?? 0)
+}
+
+func askNtfy(into config: inout RemoteConfig, existing: RemoteConfig?) {
+  let current = existing?.ntfyServer ?? "https://ntfy.sh"
+  let serverText = readSecret("ntfy server URL (empty keeps \(current)): ", echo: true) ?? current
+  // The access token travels with every message, so the server must be HTTPS.
+  guard let serverURL = validRelayURL(serverText) else {
+    printErr("ntfy server URL must be https:// (or http://localhost for testing), without a query: \(serverText)")
+    exit(EXIT_FAILURE)
+  }
+  let server = serverURL.absoluteString.hasSuffix("/") ? String(serverURL.absoluteString.dropLast()) : serverURL.absoluteString
+  let topic = askRequired("ntfy topic", current: existing?.ntfyTopic)
+  guard validNtfyTopic(topic) else {
+    printErr("An ntfy topic is 1 to 64 letters, digits, \"-\" or \"_\"")
+    exit(EXIT_FAILURE)
+  }
+  let hint = existing?.ntfyToken == nil ? "empty for none" : "empty keeps the current token, \"none\" removes it"
+  var token = readSecret("ntfy access token (\(hint)): ") ?? existing?.ntfyToken
+  if token == "none" { token = nil }
+  config.ntfyServer = server
+  config.ntfyTopic = topic
+  config.ntfyToken = token
+  config.ntfyPriority = askPriority("ntfy", range: ntfyPriorities, current: existing?.ntfyPriority ?? 3)
+  if serverURL.host?.lowercased() == "ntfy.sh" {
+    printErr("Warning: ntfy.sh will see each notification's key name, host, caller, reason and approval link.")
+    if token == nil {
+      printErr("Warning: with no access token, anyone who knows the topic can read them too.")
+    }
+  }
+}
+
 func remoteSetup(_ args: [String]) {
   var args = args
   let existing = loadRemoteConfig()
@@ -140,39 +220,21 @@ func remoteSetup(_ args: [String]) {
   let request = adminRequest("remote-setup", key: trimmedURL)
   requireLocalTouchID(request, reason: "Change keymaster remote approval settings: relay \(sanitizeForPrompt(trimmedURL))")
 
-  let keep = existing == nil ? "" : " (empty keeps the current value)"
-  guard let token = readSecret("Relay token\(keep): ") ?? existing?.relayToken else {
-    printErr("A relay token is required")
+  let token = askRequired("Relay token", current: existing?.relayToken)
+  let current = notifierName(pushover: existing?.pushoverConfigured ?? false, ntfy: existing?.ntfyConfigured ?? false)
+  let answer = readSecret("Notify through pushover, ntfy, both or none (empty keeps \(current)): ", echo: true) ?? current
+  guard let notifiers = parseNotifiers(answer) else {
+    printErr("Answer pushover, ntfy, both or none")
     exit(EXIT_FAILURE)
   }
-  let pushoverUser = readSecret("Pushover user key\(existing == nil ? " (empty skips Pushover)" : keep): ") ?? existing?.pushoverUser
-  let pushoverToken = pushoverUser == nil ? nil : (readSecret("Pushover app token\(keep): ") ?? existing?.pushoverToken)
-  var pushoverPriority: Int?
-  if pushoverUser != nil {
-    let current = existing?.pushoverPriority ?? 0
-    let range = "\(pushoverPriorities.lowerBound) to \(pushoverPriorities.upperBound)"
-    if let answer = readSecret("Pushover priority, \(range) (empty keeps \(current)): ", echo: true) {
-      guard let priority = Int(answer), pushoverPriorities.contains(priority) else {
-        printErr("Pushover priority must be a whole number from \(range)")
-        exit(EXIT_FAILURE)
-      }
-      pushoverPriority = priority
-    } else {
-      pushoverPriority = current
-    }
-  }
-  let config = RemoteConfig(
-    relayURL: trimmedURL,
-    relayToken: token,
-    pushoverToken: pushoverToken,
-    pushoverUser: pushoverUser,
-    pushoverPriority: pushoverPriority
-  )
+  var config = RemoteConfig(relayURL: trimmedURL, relayToken: token)
+  if notifiers.pushover { askPushover(into: &config, existing: existing) }
+  if notifiers.ntfy { askNtfy(into: &config, existing: existing) }
   guard storeJSONItem(config, key: remoteConfigItem) else {
     printErr("Could not store the remote approval settings")
     exit(EXIT_FAILURE)
   }
-  printErr("Saved. Relay \(trimmedURL), Pushover \(pushoverSummary(config)).")
+  printErr("Saved. Relay \(trimmedURL), Pushover \(pushoverSummary(config)), ntfy \(ntfySummary(config)).")
   let stale = loadCredentials().filter { $0.origin != config.origin }
   if !stale.isEmpty {
     printErr("Warning: \(stale.count) enrolled passkey(s) belong to another origin and won't work with this relay:")
@@ -259,6 +321,7 @@ func remoteList() {
   print("Relay:    \(config?.relayURL ?? "not set up")")
   if let config = config {
     print("Pushover: \(pushoverSummary(config))")
+    print("ntfy:     \(ntfySummary(config))")
   }
   let credentials = loadCredentials()
   print("\nPasskeys (\(credentials.count)):")
