@@ -131,6 +131,66 @@ do {
   check(pushoverPriorities.contains(-2) && pushoverPriorities.contains(1) && !pushoverPriorities.contains(2), "priority range is -2 to 1")
 }
 
+section("ntfy config")
+do {
+  let old = try? JSONDecoder().decode(RemoteConfig.self, from: Data(#"{"relayURL":"https://a.example","relayToken":"t","pushoverToken":"p","pushoverUser":"u"}"#.utf8))
+  check(old != nil && old?.ntfyConfigured == false, "config saved before ntfy existed still loads, with ntfy off")
+  check(old.map(ntfySummary) == "off", "ntfy summary is off without a server")
+  var config = RemoteConfig(relayURL: "https://a.example", relayToken: "t", ntfyServer: "https://ntfy.example", ntfyTopic: "km")
+  check(config.ntfyConfigured, "ntfy needs a server and a topic, nothing else")
+  check(ntfySummary(config) == "on, https://ntfy.example, priority 3", "missing ntfy priority reads as 3: \(ntfySummary(config))")
+  config.ntfyPriority = 5
+  check(ntfySummary(config) == "on, https://ntfy.example, priority 5", "summary shows the ntfy priority")
+  check(validNtfyTopic("keymaster-x_9"), "letters, digits, dash and underscore make a topic")
+  check(validNtfyTopic(String(repeating: "a", count: 64)), "a 64-character topic is accepted")
+  check(!validNtfyTopic("") && !validNtfyTopic("a/b") && !validNtfyTopic("a b") && !validNtfyTopic(String(repeating: "a", count: 65)), "bad topics are refused")
+  check(validNtfyTopic(makeEnrollRequest(label: "phone", lifetime: 60).id), "a request ID is a valid ntfy sequence ID")
+}
+
+section("notifier choice")
+do {
+  for (pushover, ntfy) in [(true, true), (true, false), (false, true), (false, false)] {
+    let parsed = parseNotifiers(notifierName(pushover: pushover, ntfy: ntfy))
+    check(parsed?.pushover == pushover && parsed?.ntfy == ntfy, "\(notifierName(pushover: pushover, ntfy: ntfy)) round trips")
+  }
+  check(parseNotifiers("NTFY")?.ntfy == true, "answer is case-insensitive")
+  check(parseNotifiers("gotify") == nil, "unknown service is refused")
+}
+
+section("ntfy requests")
+do {
+  var config = RemoteConfig(relayURL: "https://a.example", relayToken: "t", ntfyServer: "https://ntfy.example/base", ntfyTopic: "km")
+  let page = URL(string: "https://a.example/r/abc#k")!
+  let request = ntfyPublishRequest(config: config, requestId: "req_1", title: "keymaster: get clé", message: "m", url: page)
+  check(request?.httpMethod == "POST", "publish is a POST")
+  check(request?.url?.absoluteString == "https://ntfy.example/base/", "publish goes to the server root: \(request?.url?.absoluteString ?? "nil")")
+  check(request?.value(forHTTPHeaderField: "Content-Type") == "application/json", "publish is JSON")
+  check(request?.value(forHTTPHeaderField: "Authorization") == nil, "no token, no Authorization header")
+  let body = request?.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
+  check(body["topic"] as? String == "km", "body names the topic")
+  check(body["sequence_id"] as? String == "req_1", "sequence ID is the request ID")
+  check(body["title"] as? String == "keymaster: get clé", "a non-ASCII title survives")
+  check(body["click"] as? String == page.absoluteString, "clicking opens the page")
+  let action = (body["actions"] as? [[String: Any]])?.first
+  check(action?["action"] as? String == "view" && action?["url"] as? String == page.absoluteString, "view action opens the page")
+  check(body["priority"] == nil, "default priority isn't sent")
+
+  config.ntfyToken = "tk_abc"
+  config.ntfyPriority = 4
+  let authed = ntfyPublishRequest(config: config, requestId: "req_1", title: "t", message: "m", url: page)
+  check(authed?.value(forHTTPHeaderField: "Authorization") == "Bearer tk_abc", "token goes in a bearer header")
+  let authedBody = authed?.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
+  check(authedBody["priority"] as? Int == 4, "priority is sent")
+
+  let delete = ntfyDeleteRequest(config: config, requestId: "req_1")
+  check(delete?.httpMethod == "DELETE", "cleanup is a DELETE")
+  check(delete?.url?.absoluteString == "https://ntfy.example/base/km/req_1", "cleanup names topic and sequence ID: \(delete?.url?.absoluteString ?? "nil")")
+  check(delete?.value(forHTTPHeaderField: "Authorization") == "Bearer tk_abc", "cleanup sends the token")
+
+  config.ntfyTopic = nil
+  check(ntfyPublishRequest(config: config, requestId: "r", title: "t", message: "m", url: page) == nil, "no topic, no request")
+}
+
 // MARK: - Passkey labels and history
 
 section("passkey labels")

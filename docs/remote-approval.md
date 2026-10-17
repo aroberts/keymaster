@@ -41,7 +41,7 @@ keymaster (Mac)               relay (untrusted)              phone
 build request R
 challenge = SHA256(R)
 POST R  ───────────────────▶  store R (until exp)
-Pushover nudge (URL)  ──────────────────────────────────────▶ notification
+Pushover/ntfy nudge (URL)  ─────────────────────────────────▶ notification
                               GET /r/<id> page + R  ◀──────── open link
                                                               show R, Face ID
                               POST response  ◀─────────────── navigator.credentials.get
@@ -56,8 +56,8 @@ updateSession + performAction
   in memory, serves the page and passes the response back. It holds no keys
   and makes no decisions. It ships as the Docker image
   `ghcr.io/aroberts/keymaster-relay` for amd64 and arm64.
-- **Pushover** delivers the link. It is a doorbell only. `enroll` also prints
-  a QR code in the terminal.
+- **Pushover** or **ntfy** delivers the link. Either is a doorbell only, and
+  both can be on at once. `enroll` also prints a QR code in the terminal.
 
 ## Protocol
 
@@ -152,7 +152,7 @@ after TouchID.
 
 `keymaster remote enroll` requires local TouchID. It posts an `enroll`
 request, prints a QR code for the page, and sends the link through Pushover
-if configured. The page calls `navigator.credentials.create` with ES256 only,
+or ntfy if configured. The page calls `navigator.credentials.create` with ES256 only,
 `residentKey: "required"`, `userVerification: "required"` and `attestation:
 "none"`. It returns:
 
@@ -205,8 +205,22 @@ KEYMASTER_REMOTE_TIMEOUT=<seconds>    # default 300, clamped to 30–900
 `setup`, `enroll`, `revoke`, `allow` and `disallow` require local TouchID.
 `list` and `test` don't, because they change nothing and release nothing.
 
-`setup` also asks for a Pushover priority from -2 to 1 when Pushover is on.
-Priority 1 bypasses quiet hours. Emergency priority 2 is not offered.
+`setup` asks which services send notifications: `pushover`, `ntfy`, `both`
+or `none`. Dropping a service erases its settings.
+
+Pushover takes a priority from -2 to 1. Priority 1 bypasses quiet hours.
+Emergency priority 2 is not offered.
+
+ntfy takes a server URL (default `https://ntfy.sh`), a topic, an optional
+access token and a priority from 1 to 5. The server must be HTTPS, because
+the token goes with every message. Tapping the notification's button clears
+it. If the request is denied or expires, keymaster deletes the message. The
+Android and web clients remove it. The iOS app ignores deletes ([ntfy
+#1945][ntfy-1945]), so on an iPhone that notification stays until you dismiss
+it. `setup` warns when the server is
+ntfy.sh, which would see every notification's text and link.
+
+[ntfy-1945]: https://github.com/binwiederhier/ntfy/issues/1945
 
 `list` shows each passkey's last remote approval, read from the audit log by
 credential ID. The log keeps about 2 MB across its rotation, so a passkey with
@@ -252,7 +266,7 @@ HMAC key or the relay token without a fresh approval.
 
 | Item | Keychain service | Notes |
 |---|---|---|
-| Relay URL, relay token, Pushover user key, app token and priority | `keymaster_remote_config` | JSON |
+| Relay URL, relay token, Pushover user key, app token and priority, ntfy server, topic, token and priority | `keymaster_remote_config` | JSON |
 | Enrolled credentials (id, SPKI, alg, rpId, origin, label, created) | `keymaster_remote_credentials` | JSON. rpId and origin are stored per credential, so a config edit can't change what gets verified |
 | Remote allowlist | `keymaster_remote_allowlist` | JSON array |
 
@@ -277,7 +291,7 @@ It runs as one replica on the homelab swarm, behind Traefik:
   carries `Authorization: Bearer …`. The relay checks the token itself.
 
 Authelia adds a second gate in front of the capability URL. Someone holding a
-Pushover link can no longer deny or spam a request without also logging in.
+notification's link can no longer deny or spam a request without also logging in.
 The page refuses to follow redirects, so an expired login shows "reload"
 instead of a false "answered".
 
@@ -293,7 +307,8 @@ GHCR all the same, so a pull doesn't depend on the Gitea registry.
 | Attacker has | Outcome |
 |---|---|
 | Relay only | Denial of service. It can't forge an assertion. A replayed old assertion fails check 3. |
-| Pushover only | Learns that requests happen, and their links. Can't approve without the passkey. Can deny via the link. |
+| Pushover, or the ntfy server, only | Learns that requests happen, what they ask for, and their links. Can't approve without the passkey. Can deny via the link. |
+| ntfy.sh as the upstream of a self-hosted ntfy (and Firebase, APNs) | Learns when requests happen, under a SHA-256 of the topic URL. It gets the message ID, not the text or link. A guessable topic URL can be confirmed from the hash. Can drop or delay pushes, which costs a timeout. |
 | Same-UID process on the Mac only | Can trigger requests, which you see on the phone and deny. This is no worse than triggering TouchID prompts. It can read the relay token through keymaster with a TouchID approval, which only lets it create requests. |
 | Same-UID process **and** the relay | The relay shows a harmless-looking request while the challenge belongs to the attacker's real one. The design can't close this, because the page that renders `R` comes from the relay. Mitigations: the allowlist, short `exp`, and the request code, which only helps when you are at the Mac. |
 | Phone unlocked in someone's hand | Face ID or passcode, the same as any passkey. |
@@ -318,7 +333,7 @@ went unanswered.
 The sources moved from one file to `Sources/*.swift`, compiled together by
 `swiftc` (`build.sh`, the Homebrew formula). `main.swift` holds argument
 parsing and the approval decision. The `Remote*.swift` files hold the
-request, verifier, config, relay client, Pushover client, approval flow and
+request, verifier, config, relay client, Pushover and ntfy clients, approval flow and
 `remote` subcommands.
 
 `test.sh` compiles every source except `main.swift` together with
@@ -374,6 +389,9 @@ on 2026-10-07. Items 12 and 13 changed in review; the rest stand.
     can be found and revoked.
 14. **Go code is gofmt-formatted with tabs.** That departs from the two-space
     rule, because gofmt is not configurable and CI checks it.
+15. **ntfy is an alternative to Pushover, and both can be on.** Auth is an
+    access token only. ntfy's Basic auth with an empty username is the same
+    token. Priority runs 1 to 5, default 3.
 
 ## Homebrew formula
 
@@ -407,6 +425,9 @@ Still unverified:
 
 - Pushover removing the message from the phone when the request expires
   (`ttl`).
+- ntfy delivery to an iPhone through a self-hosted server with
+  `upstream-base-url`. Publishing and deleting were checked against a local
+  ntfy 2.17.0 server only.
 - The page's handling of an Authelia session that expires while the page is
   open. The page's `fetch` should refuse the redirect and say "Your login has
   expired. Reload the page."

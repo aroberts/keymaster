@@ -1,7 +1,7 @@
 import Foundation
 
-// Pushover is only a doorbell: it carries the link to the approval page.
-// Losing a notification costs a timeout, never an approval.
+// Pushover and ntfy are only doorbells: they carry the link to the approval
+// page. Losing a notification costs a timeout, never an approval.
 func sendPushover(config: RemoteConfig, title: String, message: String, url: URL, expiry: Date) -> Bool {
   guard let token = config.pushoverToken, let user = config.pushoverUser else { return false }
   var components = URLComponents()
@@ -24,15 +24,75 @@ func sendPushover(config: RemoteConfig, title: String, message: String, url: URL
   // URLComponents leaves "+" alone, which a form body would read as a space.
   let body = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B") ?? ""
   request.httpBody = Data(body.utf8)
+  return sendNotification(request, service: "Pushover")
+}
+
+// The message's sequence ID is the request ID, so ntfyDeleteRequest can find
+// it again. Sent as JSON because a title can hold characters that an HTTP
+// header can't.
+func ntfyPublishRequest(config: RemoteConfig, requestId: String, title: String, message: String, url: URL) -> URLRequest? {
+  guard let server = config.ntfyServer, let topic = config.ntfyTopic,
+        let endpoint = URL(string: "\(server)/") else { return nil }
+  var body: [String: Any] = [
+    "topic": topic,
+    "sequence_id": requestId,
+    "title": String(title.prefix(250)),
+    "message": String(message.prefix(1000)),
+    "click": url.absoluteString,
+    "actions": [["action": "view", "label": "Review request", "url": url.absoluteString, "clear": true]],
+  ]
+  if let priority = config.ntfyPriority, priority != 3 {
+    body["priority"] = priority
+  }
+  guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return nil }
+  var request = URLRequest(url: endpoint, timeoutInterval: 15)
+  request.httpMethod = "POST"
+  request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+  if let token = config.ntfyToken {
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+  }
+  request.httpBody = data
+  return request
+}
+
+// ntfy has no per-message TTL, so the message is deleted once the request
+// is denied or expires. The iOS app ignores deletes (ntfy issue #1945).
+// The caller waits on this, so it gets a short timeout.
+func ntfyDeleteRequest(config: RemoteConfig, requestId: String) -> URLRequest? {
+  guard let server = config.ntfyServer, let topic = config.ntfyTopic,
+        let endpoint = URL(string: "\(server)/\(topic)/\(requestId)") else { return nil }
+  var request = URLRequest(url: endpoint, timeoutInterval: 5)
+  request.httpMethod = "DELETE"
+  if let token = config.ntfyToken {
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+  }
+  return request
+}
+
+func sendNtfy(config: RemoteConfig, requestId: String, title: String, message: String, url: URL) -> Bool {
+  guard let request = ntfyPublishRequest(config: config, requestId: requestId, title: title, message: message, url: url) else {
+    return false
+  }
+  return sendNotification(request, service: "ntfy")
+}
+
+func deleteNtfy(config: RemoteConfig, requestId: String) {
+  guard let request = ntfyDeleteRequest(config: config, requestId: requestId) else { return }
+  if sendNotification(request, service: "ntfy delete") {
+    debug("ntfy notification deleted")
+  }
+}
+
+private func sendNotification(_ request: URLRequest, service: String) -> Bool {
   do {
     let (_, response) = try blockingRequest(request)
     guard response.statusCode == 200 else {
-      printErr("Pushover answered HTTP \(response.statusCode)")
+      printErr("\(service) answered HTTP \(response.statusCode)")
       return false
     }
     return true
   } catch {
-    printErr("Pushover failed: \(error)")
+    printErr("\(service) failed: \(error)")
     return false
   }
 }
