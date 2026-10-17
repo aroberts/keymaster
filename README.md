@@ -295,6 +295,10 @@ model, and [relay/README.md](relay/README.md) to deploy the relay.
 Every step that changes what the phone can approve needs local TouchID. None
 of them can be approved from the phone.
 
+First deploy the relay somewhere your phone can reach over HTTPS, following
+[relay/README.md](relay/README.md). Then, if you want the phone to ring, set
+up Pushover or ntfy as described in [Notifications](#notifications).
+
 ```bash
 # 1. Point keymaster at your relay. Prompts for the relay token, then for
 #    notifications: Pushover (user key, app token, priority -2 to 1), ntfy
@@ -317,6 +321,70 @@ keymaster remote test
 allowlist. `revoke` and `disallow` undo `enroll` and `allow`. Each passkey's
 label is also its name on the phone, and `list` shows when it last approved
 a request. After enrolling the same phone twice, revoke the one that hasn't.
+
+### Notifications
+
+A notification carries the link to the approval page. It approves nothing,
+so a lost notification costs a timeout. Without one, open the link keymaster
+prints yourself. `keymaster remote setup` asks for `pushover`, `ntfy`, `both`
+or `none`. Run it again to change the answer. Empty answers keep the current
+values. Dropping a service erases its settings.
+
+Notifications show the key name, host, calling processes, reason and the
+approval link. Whoever runs the notification service can read them.
+
+#### Pushover
+
+1. Install the Pushover app on the phone and sign in. The dashboard at
+   [pushover.net](https://pushover.net) shows your user key.
+2. Create an application at
+   [pushover.net/apps/build](https://pushover.net/apps/build) and copy its
+   API token.
+3. Give both to `keymaster remote setup`, with a priority:
+
+| Priority | Effect |
+|---|---|
+| -2 | No alert, only listed in the app |
+| -1 | Quiet |
+| 0 | Normal (default) |
+| 1 | High, bypasses quiet hours |
+
+Emergency priority 2 is not offered. keymaster sets each message's `ttl` to
+the request's expiry, so Pushover can drop it once the request is dead.
+
+#### ntfy
+
+`setup` asks for a server URL (default `https://ntfy.sh`), a topic, an
+optional access token and a priority from 1 (min) to 5 (max, default 3). The
+server must be HTTPS, because the token goes with every message. A topic is 1
+to 64 letters, digits, `-` or `_`.
+
+On a self-hosted server, give keymaster a token that can only publish, and
+the phone a login that can only read:
+
+```bash
+ntfy user add keymaster
+ntfy access keymaster keymaster_approvals write-only
+ntfy token add keymaster              # give this token to keymaster remote setup
+
+ntfy user add phone
+ntfy access phone keymaster_approvals read-only
+```
+
+Then subscribe to the topic in the ntfy app on the phone, logged in as
+`phone`. For instant delivery to an iPhone, set `upstream-base-url:
+"https://ntfy.sh"` in the server's `server.yml`. ntfy.sh then forwards a push
+that carries the message ID, never the text or link.
+
+On ntfy.sh itself, pick a long random topic name. Without an access token,
+anyone who knows the topic can read the notifications, and `setup` warns
+about it.
+
+Tapping the notification's "Review request" button clears it. If a request
+is denied or expires, keymaster deletes the message. Android and the web
+client remove it. The iOS app ignores deletes
+([ntfy #1945](https://github.com/binwiederhier/ntfy/issues/1945)), so on an
+iPhone the notification stays until you dismiss it.
 
 ### Approval modes
 
