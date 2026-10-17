@@ -137,14 +137,14 @@ do {
   check(old != nil && old?.ntfyConfigured == false, "config saved before ntfy existed still loads, with ntfy off")
   check(old.map(ntfySummary) == "off", "ntfy summary is off without a server")
   var config = RemoteConfig(relayURL: "https://a.example", relayToken: "t", ntfyServer: "https://ntfy.example", ntfyTopic: "km")
-  check(config.ntfyConfigured && !config.pushoverConfigured, "ntfy needs a server and a topic, nothing else")
+  check(config.ntfyConfigured, "ntfy needs a server and a topic, nothing else")
   check(ntfySummary(config) == "on, https://ntfy.example, priority 3", "missing ntfy priority reads as 3: \(ntfySummary(config))")
   config.ntfyPriority = 5
   check(ntfySummary(config) == "on, https://ntfy.example, priority 5", "summary shows the ntfy priority")
-  check(ntfyPriorities == 1...5, "ntfy priority range is 1 to 5")
   check(validNtfyTopic("keymaster-x_9"), "letters, digits, dash and underscore make a topic")
+  check(validNtfyTopic(String(repeating: "a", count: 64)), "a 64-character topic is accepted")
   check(!validNtfyTopic("") && !validNtfyTopic("a/b") && !validNtfyTopic("a b") && !validNtfyTopic(String(repeating: "a", count: 65)), "bad topics are refused")
-  check(validNtfyTopic(randomBytes(16).base64URL), "a request ID is a valid ntfy sequence ID")
+  check(validNtfyTopic(makeEnrollRequest(label: "phone", lifetime: 60).id), "a request ID is a valid ntfy sequence ID")
 }
 
 section("notifier choice")

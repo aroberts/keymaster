@@ -213,11 +213,11 @@ Emergency priority 2 is not offered.
 
 ntfy takes a server URL (default `https://ntfy.sh`), a topic, an optional
 access token and a priority from 1 to 5. The server must be HTTPS, because
-the token goes with every message. keymaster publishes as JSON with the
-request ID as the message's sequence ID. Once the request is answered, denied
-or expired, keymaster deletes the message. The Android and web clients remove
-it. The iOS app ignores deletes ([ntfy #1945][ntfy-1945]), so on an iPhone
-the notification stays until you dismiss it. `setup` warns when the server is
+the token goes with every message. Tapping the notification's button clears
+it. If the request is denied or expires, keymaster deletes the message. The
+Android and web clients remove it. The iOS app ignores deletes ([ntfy
+#1945][ntfy-1945]), so on an iPhone that notification stays until you dismiss
+it. `setup` warns when the server is
 ntfy.sh, which would see every notification's text and link.
 
 [ntfy-1945]: https://github.com/binwiederhier/ntfy/issues/1945

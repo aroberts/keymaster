@@ -120,6 +120,11 @@ func validRelayURL(_ text: String) -> URL? {
   return nil
 }
 
+func withoutTrailingSlash(_ url: URL) -> String {
+  let text = url.absoluteString
+  return text.hasSuffix("/") ? String(text.dropLast()) : text
+}
+
 func pushoverSummary(_ config: RemoteConfig) -> String {
   config.pushoverConfigured ? "on, priority \(config.pushoverPriority ?? 0)" : "off"
 }
@@ -129,7 +134,7 @@ func ntfySummary(_ config: RemoteConfig) -> String {
   return "on, \(server), priority \(config.ntfyPriority ?? 3)"
 }
 
-// Which services ring the phone, from the answer to setup's first question.
+// Which services ring the phone, from setup's answer.
 func parseNotifiers(_ text: String) -> (pushover: Bool, ntfy: Bool)? {
   switch text.lowercased() {
   case "pushover": return (true, false)
@@ -160,9 +165,9 @@ func askPriority(_ service: String, range: ClosedRange<Int>, current: Int) -> In
 }
 
 // A required value: empty keeps the current one, if there is one.
-func askRequired(_ label: String, current: String?, echo: Bool = false) -> String {
+func askRequired(_ label: String, current: String?) -> String {
   let hint = current == nil ? "" : " (empty keeps the current value)"
-  guard let value = readSecret("\(label)\(hint): ", echo: echo) ?? current else {
+  guard let value = readSecret("\(label)\(hint): ") ?? current else {
     printErr("\(label) is required")
     exit(EXIT_FAILURE)
   }
@@ -183,7 +188,7 @@ func askNtfy(into config: inout RemoteConfig, existing: RemoteConfig?) {
     printErr("ntfy server URL must be https:// (or http://localhost for testing), without a query: \(serverText)")
     exit(EXIT_FAILURE)
   }
-  let server = serverURL.absoluteString.hasSuffix("/") ? String(serverURL.absoluteString.dropLast()) : serverURL.absoluteString
+  let server = withoutTrailingSlash(serverURL)
   let topic = askRequired("ntfy topic", current: existing?.ntfyTopic)
   guard validNtfyTopic(topic) else {
     printErr("An ntfy topic is 1 to 64 letters, digits, \"-\" or \"_\"")
@@ -216,7 +221,7 @@ func remoteSetup(_ args: [String]) {
     printErr("Relay URL must be https:// (or http://localhost for testing), without a query: \(relayText)")
     exit(EXIT_FAILURE)
   }
-  let trimmedURL = relayURL.absoluteString.hasSuffix("/") ? String(relayURL.absoluteString.dropLast()) : relayURL.absoluteString
+  let trimmedURL = withoutTrailingSlash(relayURL)
   let request = adminRequest("remote-setup", key: trimmedURL)
   requireLocalTouchID(request, reason: "Change keymaster remote approval settings: relay \(sanitizeForPrompt(trimmedURL))")
 

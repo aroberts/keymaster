@@ -24,17 +24,7 @@ func sendPushover(config: RemoteConfig, title: String, message: String, url: URL
   // URLComponents leaves "+" alone, which a form body would read as a space.
   let body = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B") ?? ""
   request.httpBody = Data(body.utf8)
-  do {
-    let (_, response) = try blockingRequest(request)
-    guard response.statusCode == 200 else {
-      printErr("Pushover answered HTTP \(response.statusCode)")
-      return false
-    }
-    return true
-  } catch {
-    printErr("Pushover failed: \(error)")
-    return false
-  }
+  return sendNotification(request, service: "Pushover")
 }
 
 // The message's sequence ID is the request ID, so ntfyDeleteRequest can find
@@ -66,7 +56,7 @@ func ntfyPublishRequest(config: RemoteConfig, requestId: String, title: String, 
 }
 
 // ntfy has no per-message TTL, so the message is deleted once the request
-// is answered or expires. The iOS app ignores deletes (ntfy issue #1945).
+// is denied or expires. The iOS app ignores deletes (ntfy issue #1945).
 // The caller waits on this, so it gets a short timeout.
 func ntfyDeleteRequest(config: RemoteConfig, requestId: String) -> URLRequest? {
   guard let server = config.ntfyServer, let topic = config.ntfyTopic,
@@ -83,26 +73,26 @@ func sendNtfy(config: RemoteConfig, requestId: String, title: String, message: S
   guard let request = ntfyPublishRequest(config: config, requestId: requestId, title: title, message: message, url: url) else {
     return false
   }
-  return ntfySend(request, action: "ntfy")
+  return sendNotification(request, service: "ntfy")
 }
 
 func deleteNtfy(config: RemoteConfig, requestId: String) {
   guard let request = ntfyDeleteRequest(config: config, requestId: requestId) else { return }
-  if ntfySend(request, action: "ntfy delete") {
+  if sendNotification(request, service: "ntfy delete") {
     debug("ntfy notification deleted")
   }
 }
 
-private func ntfySend(_ request: URLRequest, action: String) -> Bool {
+private func sendNotification(_ request: URLRequest, service: String) -> Bool {
   do {
     let (_, response) = try blockingRequest(request)
     guard response.statusCode == 200 else {
-      printErr("\(action) answered HTTP \(response.statusCode)")
+      printErr("\(service) answered HTTP \(response.statusCode)")
       return false
     }
     return true
   } catch {
-    printErr("\(action) failed: \(error)")
+    printErr("\(service) failed: \(error)")
     return false
   }
 }

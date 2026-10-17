@@ -109,7 +109,11 @@ func askPhone(_ remote: RemoteRequest, config: RemoteConfig, title: String, mess
     debug("No notifications configured; open the link yourself")
   }
   let result = relay.waitForResult(remote)
-  if ntfySent { deleteNtfy(config: config, requestId: remote.id) }
+  if case .responded = result {
+    // The notification's button has clear: true, so tapping it cleared it.
+  } else if ntfySent {
+    deleteNtfy(config: config, requestId: remote.id)
+  }
   switch result {
   case .responded(let response): return .responded(response)
   case .denied: return .denied
